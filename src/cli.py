@@ -9,6 +9,7 @@ from src.audio.extractor import AudioExtractor
 from src.core.asr import VolcengineASRClient
 from src.utils.config import MissingAuthError
 
+
 async def async_main():
     parser = argparse.ArgumentParser(description="BiliVision-Agent - B站多模态视频内容获取工具")
     parser.add_argument("url", help="B站视频URL或BV号")
@@ -35,28 +36,29 @@ async def async_main():
     print("[*] 正在尝试抓取 CC 字幕...")
     subtitles = await get_video_subtitles(bvid)
     if subtitles:
-         # 截断显示一部分
-         preview = subtitles[:200].replace('\n', ' ')
-         print(f"【字幕截取】: {preview}...\n(共计 {len(subtitles)} 字符)")
+        preview = subtitles[:200].replace('\n', ' ')
+        print(f"【字幕截取】: {preview}...\n(共计 {len(subtitles)} 字符)")
     else:
-         print("[!] 检测到该视频未提供 CC 字幕。这可能是一个解说视频或纯画面视频。")
-         if not args.visual and not args.asr:
-             print("你可以追加以下参数深度解析文本：\n  --visual : 下载视频或抽帧截图\n  --asr    : 调用火山引擎提取音频轨并转文字")
-             return
-         if args.asr:
-             try:
-                 asr_client = VolcengineASRClient()
-                 print("\n[*] 启动音频轨道抽取...")
-                 dirs = setup_workspace()
-                 audio_extractor = AudioExtractor(bvid)
-                 audio_path = audio_extractor.download_audio(dirs["audios"], start_time=args.start, end_time=args.end)
-                 print("[*] 正在提交至火山引擎 ASR 进行语音识别...")
-                 text = await asr_client.transcribe_audio(audio_path)
-                 print(f"【ASR 提取结果】:\n{text}")
-             except MissingAuthError:
-                 print("\n[!] 错误: 未配置火山引擎鉴权信息，取消 ASR 音频识别。")
-                 return
-                 
+        print("[!] 检测到该视频未提供 CC 字幕。这可能是一个解说视频或纯画面视频。")
+        if not args.visual and not args.asr:
+            print("你可以追加以下参数深度解析文本：\n  --visual : 下载视频或抽帧截图\n  --asr    : 调用火山引擎提取音频轨并转文字")
+            return
+        if args.asr:
+            try:
+                asr_client = VolcengineASRClient()
+                print("\n[*] 启动音频轨道抽取...")
+                dirs = setup_workspace()
+                audio_extractor = AudioExtractor(bvid)
+                audio_path = audio_extractor.download_audio(dirs["audios"], start_time=args.start, end_time=args.end)
+                print("[*] 正在提交至火山引擎 ASR 进行语音识别...")
+                text = await asr_client.transcribe_audio(audio_path)
+                print(f"【ASR 提取结果】:\n{text}")
+                return
+            except MissingAuthError:
+                print("\n[!] 错误: 未配置火山引擎鉴权信息，取消 ASR 音频识别。")
+                print("[i] 请在项目根目录 .env 文件中配置 VOLC_ACCESS_KEY 和 VOLC_SECRET_KEY。")
+                return
+
     print("-" * 50)
 
     if args.visual:
@@ -76,18 +78,19 @@ async def async_main():
         print(f"[*] 视频流临时保存于: {video_path}")
         print("[*] 正在通过 ffmpeg 提取关键帧 (每10秒/帧)...")
         frames = extractor.extract_frames(video_path, output_dir=frame_dir)
-        print(f"[*] 成功提取 {len(frames)} 张关键帧 (此为方法验证):")
+        print(f"[*] 成功提取 {len(frames)} 张关键帧:")
         for f in frames[:3]:
             print(f"  - {f}")
-        print("...")
-    else:
-        print("\n[i] 未开启视觉提取。如果需要获取视频画面，请加上 --visual 参数。")
+        if len(frames) > 3:
+            print("  ...")
+
 
 def main():
     try:
         asyncio.run(async_main())
     except KeyboardInterrupt:
         print("\n[!] 操作取消")
+
 
 if __name__ == "__main__":
     main()
