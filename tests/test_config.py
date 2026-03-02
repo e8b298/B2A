@@ -2,8 +2,8 @@ import pytest
 from src.utils.config import load_volc_config, MissingAuthError
 
 def test_load_volc_config_missing_auth(monkeypatch):
-    monkeypatch.delenv("VOLC_TEST_API_KEY", raising=False)
-    monkeypatch.delenv("VOLC_PROD_API_KEY", raising=False)
+    monkeypatch.setenv("VOLC_TEST_API_KEY", "")
+    monkeypatch.setenv("VOLC_PROD_API_KEY", "")
     monkeypatch.delenv("VOLC_ENV", raising=False)
 
     with pytest.raises(MissingAuthError) as exc_info:
