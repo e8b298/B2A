@@ -1,82 +1,46 @@
-# B2A (Bilibili to Agents)
+# B2A (Bilibili to Agents) - 哔哩哔哩 MCP 插件
 
-让 AI Agent 能「观看」B站视频的多模态内容提取工具。
+让 AI Agent（Claude、Cursor、Windsurf、Antigravity 等）原生具备「观看」和「倾听」B站视频能力的多模态 MCP 插件。
 
-## 解决什么问题
+## 🌟 核心能力
+B2A 为各种 Agent 提供了三条信息获取轨道：
+- **CC 字幕（最快）**：直接拉取视频自带的字幕文本及精准时间戳。
+- **ASR 语音识别（听觉）**：通过火山引擎大模型将音频转为文字，解决无字幕视频痛点。
+- **视觉抽帧（视觉）**：自动下载视频片段并按间隔抽帧，让多模态大模型能够使用内置 Vision 能力“看到”画面。
 
-AI Agent（如 Claude Code、Cursor 等）可以访问网页，但无法真正「观看」视频。当用户想让 Agent 分析某个 B 站视频的内容时，Agent 无从下手。
+## 📦 安装说明
 
-B2A 提供了三条互补的信息获取轨道：
+### 1. 安装 FFmpeg (前置依赖)
+视觉抽帧和长音频处理依赖网络串流和 FFmpeg。
+- **Windows**: `winget install Gyan.FFmpeg` (安装后需重启终端)
+- **macOS**: `brew install ffmpeg`
+- **Linux**: `apt install ffmpeg`
 
-- CC 字幕 — 最快速，直接拉取视频自带的字幕文本（含时间戳）
-- ASR 语音识别（声） — 通过豆包语音大模型将音频转为带时间戳的文字，解决 B 站大量视频无 CC 字幕的问题
-- 视觉抽帧（形） — 下载视频并按间隔截取关键帧图片，让 Agent 能「看到」画面内容
-
-三条轨道可任意组合，支持全视频或指定时间片段。
-
-## 安装
-
-### 1. 安装 ffmpeg（前置依赖）
-
-`--visual` 抽帧和 `--asr` 切片功能依赖 ffmpeg，版本需 5.0 以上。
-
-Windows：
-
+### 2. 安装 B2A 插件
 ```bash
-# 方式一：winget（Windows 11 自带，推荐）
-winget install Gyan.FFmpeg
-
-# 方式二：scoop
-scoop install ffmpeg
+pip install b2a777
 ```
 
-安装后打开新的终端窗口，验证：
+## 🔌 MCP 接入指南 (核心用法)
 
-```bash
-ffmpeg -version
-# 应显示 ffmpeg version 5.x 或更高
+安装完成后，无论是你在使用本地终端命令行 AI，还是桌面级 AI IDE，配置都非常标准化。
+
+### 1. Antigravity / Claude Code (命令行端)
+如果你正在终端使用 Antigravity 或官方的 Claude Code，只需直接在**对话输入框**内执行以下斜杠命令：
+```text
+/mcp add b2a-vision b2a-mcp
 ```
+*(执行完毕后可输入 `/mcp list` 查看是否处于 Running 运行状态)*
 
-如果提示找不到命令，需要将 ffmpeg 的 bin 目录加入系统 PATH 环境变量。
+### 2. Cursor
+1. 打开 **Cursor Settings** -> **Features** -> **MCP**
+2. 点击 **+ Add New MCP Server**
+3. **Type**: 选择 `command`
+4. **Name**: `b2a-vision`
+5. **Command**: `b2a-mcp` *(注意：如果是虚拟环境，请填入环境内 b2a-mcp 的绝对路径)*
 
-macOS：
-
-```bash
-brew install ffmpeg
-```
-
-Linux（Debian/Ubuntu）：
-
-```bash
-sudo apt update && sudo apt install ffmpeg
-```
-
-### 2. 安装 B2A
-
-```bash
-# 克隆仓库
-git clone https://github.com/fanzhongli/B2A.git
-cd B2A
-
-# 安装
-pip install -e .
-```
-
-安装完成后即可使用 `b2a` 命令。
-
-## 快速上手
-## 🔌 作为 MCP 插件使用 (v0.4.0+)
-
-**B2A 已经原生支持 Model Context Protocol (MCP)!** 
-
-你可以将 B2A 挂载到主流的 AI IDE 中（如 Cursor, Windsurf, Claude Desktop）。挂载后，你可以直接在聊天框发送 B 站链接，Agent 会自动调用 B2A 读取字幕、甚至调取其自身的视觉能力（Vision）查看截取的关键帧来为你“看”视频。
-
-### 挂载方法
-
-由于在安装 `b2a777` 后系统会自动生成 `b2a-mcp` 命令，你只需要在你的 AI 客户端配置中添加如下选项即可：
-
-#### 🖥️ Claude Desktop / Windsurf
-在你的 `claude_desktop_config.json` 或 `mcp_config.json` 中配置：
+### 3. Windsurf / Claude Desktop
+在配置目录下的 `mcp_config.json` 或 `claude_desktop_config.json` 中添加：
 ```json
 {
   "mcpServers": {
@@ -88,138 +52,43 @@ pip install -e .
 }
 ```
 
-#### 🖱️ Cursor
-1. 打开 Cursor Settings -> Features -> MCP
-2. 点击 **+ Add New MCP Server**
-3. Type 选择 `command`
-4. Name 填 `b2a-vision`
-5. Command 填 `b2a-mcp` (如果是虚拟环境，填入虚拟环境中的绝对路径即可)
+## 💬 与 Agent 互动的提示词示例
+配置好 MCP 后，你不需要写任何代码，直接用自然语言向 Agent 发送包含 B站链接的任务：
 
-#### 🚀 使用示例
-> "帮我看看这个视频 `BV1xx411c7mD` 第1分30秒到2分钟 画面里写了什么样的代码，顺便总结一下 up 主这段时间说了什么？"
-（Agent 将会自动调用 `bilibili_extract_frames` 和 `bilibili_extract_voice` 为你解答！）
+- *"总结一下这个视频的核心观点：BV1xx411c7mD"* (Agent 会自调度获取 CC 字幕)
+- *"这没字幕，帮我听一下这个视频的 1分30秒 到 3分钟 说了什么：https://b23.tv/xxxx"* (Agent 会自动调度 ASR 识别)
+- *"看看这个 BV1xx411c7mD 视频的画面，前两分钟里展示了哪些代码？"* (Agent 会提取关键帧并使用自己的视觉能力识图)
 
-### 基础用法：获取视频信息 + CC 字幕
+---
 
+## 🛠️ 进阶：作为 CLI 工具独立使用
+
+B2A 同时也可以作为极简的命令行工具在未接入 MCP 的环境中独立运行。
+
+### 基础用法
 ```bash
+# 获取视频信息与字幕
 b2a BV1xx411c7mD
+
+# 结构化 JSON 输出
+b2a BV1xx411c7mD --format json
 ```
-
-### 语音识别（ASR）
-
-```bash
-# 全视频 ASR
-b2a BV1xx411c7mD --asr
-
-# 指定片段 ASR（3分20秒到4分50秒）
-b2a BV1xx411c7mD --asr --start 03:20 --end 04:50
-```
-
-### 视觉抽帧
-
-```bash
-# 全视频抽帧（每10秒一张）
-b2a BV1xx411c7mD --visual
-
-# 指定片段抽帧
-b2a BV1xx411c7mD --visual --start 01:00 --end 02:30
-```
-
-### 声形同时获取
-
-```bash
-b2a BV1xx411c7mD --asr --visual --start 03:20 --end 04:50
-```
-
-### 分P视频
-
-```bash
-# 指定第3个分P
-b2a BV1xx411c7mD --page 3 --asr
-```
-
-### 多种输入格式
-
-```bash
-# 完整链接（自动提取 BV 号、分P、时间跳转）
-b2a "https://www.bilibili.com/video/BV1xx411c7mD?p=2&t=180"
-
-# b23.tv 短链
-b2a "https://b23.tv/xxxxxx"
-
-# AV 号
-b2a av170001
-```
-
-### JSON 结构化输出（供 Agent 消费）
-
-```bash
-b2a BV1xx411c7mD --asr --format json
-```
-
-## ASR 配置
-
-ASR 功能依赖豆包语音（火山引擎）API Key。不配置时，CC 字幕和视觉抽帧功能仍可正常使用。
-
-1. 复制配置模板：
-```bash
-cp .env.example .env
-```
-
-2. 编辑 `.env`，填入你的 API Key：
-```env
-VOLC_ENV=test
-VOLC_TEST_API_KEY=你的测试环境API_Key
-VOLC_PROD_API_KEY=你的生产环境API_Key
-```
-
-## CLI 参数一览
-
-```
-b2a <url> [选项]
-
-位置参数:
-  url                B站视频URL、BV号或AV号
-
-选项:
+### 更多参数
+```text
   --asr              启用语音识别（提取音频轨并转文字）
   --visual           启用视觉提取（抽取视频关键帧截图）
-  --start TIME       截取开始时间（如 01:30 或 1:03:20）
-  --end TIME         截取结束时间（如 02:40 或 1:05:00）
+  --start TIME       截取开始时间（如 01:30）
+  --end TIME         截取结束时间（如 02:40）
   --page N           指定分P编号（从1开始）
-  --format {text,json}  输出格式（默认 text）
 ```
 
-## 项目结构
-
-```
-B2A/
-├── src/
-│   ├── cli.py                 # CLI 入口
-│   ├── core/
-│   │   ├── api.py             # B站 API（视频信息、字幕、分P）
-│   │   └── asr.py             # 火山引擎 ASR（含长音频自动分片）
-│   ├── audio/
-│   │   └── extractor.py       # 音频提取（yt-dlp）
-│   ├── visual/
-│   │   └── extractor.py       # 视觉提取（yt-dlp 下载 + ffmpeg 抽帧）
-│   └── utils/
-│       ├── config.py          # 环境变量与鉴权
-│       ├── url_parser.py      # URL 解析（短链/BV/AV/分P/时间）
-│       └── workspace.py       # 工作区目录管理（按视频隔离）
-├── tests/                     # 测试用例（26个）
-├── pyproject.toml             # 打包配置
-├── requirements.txt           # 依赖清单
-└── .env.example               # 环境变量模板
-```
-
-## 运行测试
-
-```bash
-pip install -e ".[dev]"
-pytest tests/ -v
+## 🔑 ASR 语音识别配置 (可选)
+ASR 功能依赖火山引擎（豆包）API Key。不配置时不影响获取 CC 字幕和抽取关键帧。
+在工程运行目录或用户目录创建 `.env` 文件：
+```env
+VOLC_ENV=production
+VOLC_PROD_API_KEY=你的火山引擎API_Key
 ```
 
 ## License
-
 MIT
