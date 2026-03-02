@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.0 (2026-03-03)
+
+### 重大更新 (Major)
+- **原生支持 MCP 协议 (Model Context Protocol)**：大幅提升在 Agent 生态中的融合度。
+  - 新增 `mcp` 依赖库和基于 `mcp.server.fastmcp.FastMCP` 的服务端实现 (`src/mcp_server.py`)。
+  - 注册全新的 `b2a-mcp` CLI 启动命令，提供给各主流 AI IDE（Cursor, Windsurf, Claude Desktop）作为本地 MCP Server 挂载。
+  - 对大模型暴露三个原生工具节点，自带强语境提示：
+    - `bilibili_get_info_subtitles`: 获取分P、元数据、CC 字幕
+    - `bilibili_extract_voice`: 调度火山引擎执行 ASR
+    - `bilibili_extract_frames`: 提取视觉关键帧并自动指引模型调用其本地 Read 工具进行多模态视觉连结
+
 ## v0.3.2 (2026-03-03)
 
 ### 修复

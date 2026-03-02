@@ -65,6 +65,39 @@ pip install -e .
 安装完成后即可使用 `b2a` 命令。
 
 ## 快速上手
+## 🔌 作为 MCP 插件使用 (v0.4.0+)
+
+**B2A 已经原生支持 Model Context Protocol (MCP)!** 
+
+你可以将 B2A 挂载到主流的 AI IDE 中（如 Cursor, Windsurf, Claude Desktop）。挂载后，你可以直接在聊天框发送 B 站链接，Agent 会自动调用 B2A 读取字幕、甚至调取其自身的视觉能力（Vision）查看截取的关键帧来为你“看”视频。
+
+### 挂载方法
+
+由于在安装 `b2a777` 后系统会自动生成 `b2a-mcp` 命令，你只需要在你的 AI 客户端配置中添加如下选项即可：
+
+#### 🖥️ Claude Desktop / Windsurf
+在你的 `claude_desktop_config.json` 或 `mcp_config.json` 中配置：
+```json
+{
+  "mcpServers": {
+    "b2a-vision": {
+      "command": "b2a-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+#### 🖱️ Cursor
+1. 打开 Cursor Settings -> Features -> MCP
+2. 点击 **+ Add New MCP Server**
+3. Type 选择 `command`
+4. Name 填 `b2a-vision`
+5. Command 填 `b2a-mcp` (如果是虚拟环境，填入虚拟环境中的绝对路径即可)
+
+#### 🚀 使用示例
+> "帮我看看这个视频 `BV1xx411c7mD` 第1分30秒到2分钟 画面里写了什么样的代码，顺便总结一下 up 主这段时间说了什么？"
+（Agent 将会自动调用 `bilibili_extract_frames` 和 `bilibili_extract_voice` 为你解答！）
 
 ### 基础用法：获取视频信息 + CC 字幕
 
