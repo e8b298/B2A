@@ -4,11 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "b2a"
-version = "0.3.0"
+version = "0.3.1"
 description = "B2A (Bilibili to Agents) — 让 AI Agent 能「观看」B站视频"
 readme = "README.md"
 license = {text = "MIT"}
+authors = [{name = "fanzhongli"}]
 requires-python = ">=3.10"
+keywords = ["bilibili", "agent", "ai", "subtitle", "asr", "video", "multimodal"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence"
+]
 dependencies = [
     "httpx>=0.25.0",
     "yt-dlp>=2024.0.0",
@@ -19,13 +34,17 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    "build>=1.0.0",
+    "twine>=5.0.0"
 ]
 
 [project.scripts]
 b2a = "src.cli:main"
 
 [project.urls]
-Repository = "https://github.com/fanzhongli/B2A"
+Homepage = "https://github.com/e8b298/B2A"
+Repository = "https://github.com/e8b298/B2A.git"
+Bug-Tracker = "https://github.com/e8b298/B2A/issues"
 
 [tool.setuptools.packages.find]
 include = ["src*"]

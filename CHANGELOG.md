@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.1 (2026-03-03)
+
+### 新增
+- **PyPI 发布支持**：增加 `pyproject.toml` 中的 `authors`, `keywords`, `classifiers` 和项目 URL 元数据。
+- **CI/CD 自动化**：新增 `.github/workflows/publish.yml`，在 GitHub 触发 v* 标签或 Release 时，自动经由 Trusted Publishing 推送至 PyPI。
+
 ## v0.3.0 (2026-03-03)
 
 ### 新增
