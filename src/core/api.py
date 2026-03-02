@@ -1,5 +1,5 @@
+import sys
 import httpx
-import json
 from typing import Optional
 
 HEADERS = {
@@ -21,23 +21,57 @@ async def get_video_info(bvid: str) -> dict:
                 return {
                     "title": video_data.get("title", ""),
                     "desc": video_data.get("desc", ""),
-                    "cid": video_data.get("cid", 0)
+                    "cid": video_data.get("cid", 0),
+                    "duration": video_data.get("duration", 0)
                 }
             return {}
     except Exception as e:
-        print(f"Error fetching video info: {e}")
+        print(f"Error fetching video info: {e}", file=sys.stderr)
         return {}
 
-async def get_video_subtitles(bvid: str, cid: Optional[int] = None) -> str:
+async def get_page_list(bvid: str) -> list[dict]:
     """
-    获取视频的CC字幕内容。
-    1. 如果没有传入cid，先尝试获取cid。
-    2. 获取视频播放信息，提取字幕URL。
-    3. 请求字幕JSON内容并拼接纯文本。
+    获取视频的分P列表。
+    返回格式: [{"page": 1, "cid": 12345, "part": "分P标题", "duration": 120}, ...]
+    """
+    url = f"https://api.bilibili.com/x/player/pagelist?bvid={bvid}"
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.get(url, headers=HEADERS, timeout=10.0)
+            res.raise_for_status()
+            data = res.json()
+            if data.get("code") == 0 and data.get("data"):
+                return [
+                    {
+                        "page": item.get("page", i + 1),
+                        "cid": item.get("cid", 0),
+                        "part": item.get("part", ""),
+                        "duration": item.get("duration", 0)
+                    }
+                    for i, item in enumerate(data["data"])
+                ]
+    except Exception as e:
+        print(f"获取分P列表失败: {e}", file=sys.stderr)
+    return []
+
+
+async def get_cid_by_page(bvid: str, page: int = 1) -> Optional[int]:
+    """根据分P编号获取对应的 cid"""
+    pages = await get_page_list(bvid)
+    for p in pages:
+        if p["page"] == page:
+            return p["cid"]
+    return None
+
+
+async def get_video_subtitles(bvid: str, cid: Optional[int] = None) -> list[dict]:
+    """
+    获取视频的CC字幕内容，返回带时间戳的结构化数据。
+    返回格式: [{"from": 1.5, "to": 3.2, "content": "字幕文本"}, ...]
+    无字幕时返回空列表。
     """
     try:
         if not cid:
-            # 尝试通过 pagelist 获取 cid
             pagelist_url = f"https://api.bilibili.com/x/player/pagelist?bvid={bvid}"
             async with httpx.AsyncClient() as client:
                 res = await client.get(pagelist_url, headers=HEADERS, timeout=10.0)
@@ -46,46 +80,50 @@ async def get_video_subtitles(bvid: str, cid: Optional[int] = None) -> str:
                 if data.get("code") == 0 and data.get("data"):
                     cid = data["data"][0].get("cid")
                 else:
-                    return ""
+                    return []
 
         if not cid:
-            return ""
+            return []
 
-        # 获取含有 subtitle url 的 player v2 info
         player_info_url = f"https://api.bilibili.com/x/player/v2?bvid={bvid}&cid={cid}"
         async with httpx.AsyncClient() as client:
             res = await client.get(player_info_url, headers=HEADERS, timeout=10.0)
             res.raise_for_status()
             data = res.json()
-            
+
             if data.get("code") != 0:
-                print(f"异常或拦截: 获取播放器信息失败 ({data})")
-                return ""
-            
+                print(f"异常或拦截: 获取播放器信息失败 ({data})", file=sys.stderr)
+                return []
+
             sub_data = data.get("data", {}).get("subtitle", {})
             subtitles = sub_data.get("subtitles", [])
-            
+
             if not subtitles:
-                return ""
-                
-            # 取第一条字幕
+                return []
+
             sub_url = subtitles[0].get("subtitle_url")
             if not sub_url:
-                return ""
-                
+                return []
+
             if sub_url.startswith("//"):
                 sub_url = "https:" + sub_url
-                
-            # 请求字幕JSON内容
+
             sub_res = await client.get(sub_url, headers=HEADERS, timeout=10.0)
             sub_res.raise_for_status()
             sub_json = sub_res.json()
-            
+
             body = sub_json.get("body", [])
-            text_lines = [item.get("content", "") for item in body if "content" in item]
-            
-            return "\n".join(text_lines)
-            
+            # 保留完整的时间戳信息
+            result = []
+            for item in body:
+                if "content" in item:
+                    result.append({
+                        "from": item.get("from", 0),
+                        "to": item.get("to", 0),
+                        "content": item.get("content", "")
+                    })
+            return result
+
     except Exception as e:
-        print(f"获取视频字幕时出现网络或解析异常: {e}")
-        return ""
+        print(f"获取视频字幕时出现网络或解析异常: {e}", file=sys.stderr)
+        return []

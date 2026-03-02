@@ -1,7 +1,23 @@
-.worktrees/
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 环境与密钥
 .env
+
+# 测试与缓存
 .pytest_cache/
+
+# 运行时工作区（下载的视频/音频/帧图）
 workspace/
-test_dummy_cut.py
+
+# IDE
+.vscode/
+.idea/
+
+# 其他
+.worktrees/

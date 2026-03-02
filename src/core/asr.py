@@ -1,7 +1,12 @@
 import base64
+import os
+import subprocess
 import uuid
 import httpx
 from src.utils.config import load_volc_config
+
+# 单次 ASR 请求的最大音频时长（秒）。超过此值将自动分片。
+MAX_CHUNK_DURATION = 60
 
 
 class VolcengineASRClient:
@@ -11,20 +16,120 @@ class VolcengineASRClient:
         self.env_label = config["VOLC_ENV"]
         self.url = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"
 
-    async def transcribe_audio(self, audio_path: str) -> str:
+    @staticmethod
+    def _parse_time(time_str: str) -> float:
+        """解析 HH:MM:SS 或 MM:SS 格式为秒数"""
+        parts = time_str.split(':')
+        seconds = 0.0
+        for part in parts:
+            seconds = seconds * 60 + float(part)
+        return seconds
+
+    @staticmethod
+    def _get_audio_duration(audio_path: str) -> float:
+        """通过 ffprobe 获取音频文件的时长（秒）"""
+        try:
+            result = subprocess.run(
+                ['ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+                 '-of', 'default=noprint_wrappers=1:nokey=1', audio_path],
+                capture_output=True, text=True, check=True
+            )
+            return float(result.stdout.strip())
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _split_audio(audio_path: str, chunk_duration: int = MAX_CHUNK_DURATION) -> list[str]:
+        """
+        将音频文件按指定时长切割为多个片段。
+        返回片段文件路径列表。
+        """
+        output_dir = os.path.dirname(audio_path)
+        base_name = os.path.splitext(os.path.basename(audio_path))[0]
+        ext = os.path.splitext(audio_path)[1]  # 保持原始格式
+
+        pattern = os.path.join(output_dir, f"{base_name}_chunk_%03d{ext}")
+
+        subprocess.run(
+            ['ffmpeg', '-y', '-i', audio_path,
+             '-f', 'segment', '-segment_time', str(chunk_duration),
+             '-c', 'copy', pattern],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
+        )
+
+        # 收集生成的分片文件
+        chunks = sorted([
+            os.path.join(output_dir, f)
+            for f in os.listdir(output_dir)
+            if f.startswith(f"{base_name}_chunk_") and f.endswith(ext)
+        ])
+        return chunks
+
+    async def transcribe_audio(self, audio_path: str, start_offset: str = None) -> str:
         """
         调用豆包语音 BigModel Flash API 进行语音识别。
-        将本地音频文件 base64 编码后同步提交，返回带时间戳的识别文本。
+        - 自动检测音频时长，超过阈值则分片处理
+        - start_offset: 切片起始时间，用于修正为视频绝对时间戳
         """
         print(f"[i] 当前环境: {self.env_label}")
 
+        offset_ms = 0
+        if start_offset:
+            offset_ms = int(self._parse_time(start_offset) * 1000)
+            print(f"[i] 时间戳偏移: +{start_offset} ({offset_ms}ms)")
+
+        # 检测音频时长，决定是否需要分片
+        duration = self._get_audio_duration(audio_path)
+        if duration > MAX_CHUNK_DURATION:
+            print(f"[i] 音频时长 {duration:.0f}s 超过 {MAX_CHUNK_DURATION}s，启动自动分片...")
+            return await self._transcribe_chunked(audio_path, offset_ms)
+        else:
+            return await self._transcribe_single(audio_path, offset_ms)
+
+    async def _transcribe_single(self, audio_path: str, offset_ms: int = 0) -> str:
+        """单次提交一个音频文件进行 ASR"""
         with open(audio_path, 'rb') as f:
             audio_data = f.read()
 
         encoded_audio = base64.b64encode(audio_data).decode('utf-8')
+        return await self._call_asr_api(encoded_audio, audio_path, offset_ms)
+
+    async def _transcribe_chunked(self, audio_path: str, offset_ms: int = 0) -> str:
+        """将长音频分片后逐段提交 ASR，拼合结果"""
+        chunks = self._split_audio(audio_path)
+        print(f"[i] 已切割为 {len(chunks)} 个片段")
+
+        all_lines = []
+        chunk_offset_ms = offset_ms
+
+        for i, chunk_path in enumerate(chunks):
+            print(f"[*] 正在识别第 {i + 1}/{len(chunks)} 段...")
+            with open(chunk_path, 'rb') as f:
+                audio_data = f.read()
+            encoded_audio = base64.b64encode(audio_data).decode('utf-8')
+            result = await self._call_asr_api(encoded_audio, chunk_path, chunk_offset_ms)
+
+            if result and not result.startswith("[ASR"):
+                all_lines.append(result)
+
+            # 下一段的偏移 = 当前偏移 + 当前片段实际时长
+            chunk_duration = self._get_audio_duration(chunk_path)
+            chunk_offset_ms += int(chunk_duration * 1000)
+
+            # 清理临时分片文件
+            try:
+                os.remove(chunk_path)
+            except OSError:
+                pass
+
+        if all_lines:
+            return "\n".join(all_lines)
+        return "[ASR 未能识别出文本内容]"
+
+    async def _call_asr_api(self, encoded_audio: str, audio_path: str, offset_ms: int) -> str:
+        """向火山引擎发送单次 ASR 请求"""
         req_id = str(uuid.uuid4())
 
-        # 根据文件后缀判断音频格式
         fmt = "m4a"
         if audio_path.endswith(".mp3"):
             fmt = "mp3"
@@ -41,7 +146,7 @@ class VolcengineASRClient:
 
         payload = {
             "user": {
-                "uid": "bilivision_agent"
+                "uid": "b2a_agent"
             },
             "audio": {
                 "format": fmt,
@@ -72,7 +177,7 @@ class VolcengineASRClient:
                     return f"[ASR 错误 {response.status_code}]"
 
                 resp_json = response.json()
-                result = self._extract_result(resp_json)
+                result = self._extract_result(resp_json, offset_ms)
                 if result:
                     return result
 
@@ -89,13 +194,12 @@ class VolcengineASRClient:
 
         return "[ASR 失败: 超过最大重试次数]"
 
-    def _extract_result(self, resp_json: dict) -> str:
-        """从 API 响应中提取带时间戳的文本"""
+    def _extract_result(self, resp_json: dict, offset_ms: int = 0) -> str:
+        """从 API 响应中提取带时间戳的文本，并加上偏移量修正为视频绝对时间"""
         result = resp_json.get("result")
         if not result:
             return ""
 
-        # 提取 utterances（带时间戳的句子列表）
         utterances = []
         if isinstance(result, dict):
             utterances = result.get("utterances", [])
@@ -105,14 +209,18 @@ class VolcengineASRClient:
         if utterances:
             lines = []
             for u in utterances:
-                start_ms = u.get("start_time", 0)
+                start_ms = u.get("start_time", 0) + offset_ms
                 text = u.get("text", "")
-                mins = start_ms // 60000
-                secs = (start_ms % 60000) // 1000
-                lines.append(f"[{mins:02d}:{secs:02d}] {text}")
+                total_secs = start_ms // 1000
+                h, remainder = divmod(total_secs, 3600)
+                m, s = divmod(remainder, 60)
+                if h > 0:
+                    ts = f"{h:02d}:{m:02d}:{s:02d}"
+                else:
+                    ts = f"{m:02d}:{s:02d}"
+                lines.append(f"[{ts}] {text}")
             return "\n".join(lines)
 
-        # 没有 utterances 时退回纯文本
         if isinstance(result, dict) and "text" in result:
             return result["text"]
 

@@ -1,5 +1,5 @@
 httpx
 pytest
+pytest-asyncio
 yt-dlp
-ffmpeg-python
 python-dotenv

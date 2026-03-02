@@ -1,0 +1,39 @@
+# Changelog
+
+## v0.3.0 (2026-03-03)
+
+### 新增
+- **URL 解析模块** (`src/utils/url_parser.py`)：支持 b23.tv 短链重定向、`?p=N` 分P参数、`?t=N` 时间跳转、AV 号自动转 BV 号
+- **分P支持**：`api.py` 新增 `get_page_list` / `get_cid_by_page`，CLI 新增 `--page` 参数
+- **工作区按视频隔离**：目录结构改为 `workspace/{bvid}/downloads|frames|audios`，不同视频文件不再混杂
+- **长音频自动分片 ASR**：超过 60 秒的音频自动用 ffmpeg 切割后分批提交火山引擎，时间戳逐段累加
+- **JSON 结构化输出**：CLI 新增 `--format json`，输出标题、字幕、ASR 结果、帧图路径等统一 JSON 对象
+- **发布基础设施**：README.md、pyproject.toml（`b2a` 命令行入口）、LICENSE (MIT)
+- **项目改名**：BiliVision-Agent -> B2A (Bilibili to Agents)
+
+### 修复
+- **CLI 控制流重构**：ASR 和 Visual 从互斥改为独立并行，无论有无 CC 字幕都可触发，且可同时使用
+- **VisualExtractor 实现真实逻辑**：替换桩代码，实际调用 yt-dlp 下载 + ffmpeg 抽帧
+- **CC 字幕保留时间戳**：`get_video_subtitles` 返回 `list[dict]`（含 from/to/content），不再丢弃时间信息
+- **ASR 时间戳偏移修正**：指定 `--start` 切片时，ASR 输出自动加上起始偏移量
+- **下载多级回退策略**：yt-dlp 原生切片 -> 下载后 ffmpeg 裁剪 -> 兜底完整文件，兼容不同 ffmpeg 版本
+- **视觉提取仅下载视频流**：不再请求音频流合并，避免因 ffmpeg 版本问题导致合并失败
+- **清理硬编码密钥**：测试中的疑似真实 API Key UUID 替换为虚拟值
+- **补全依赖**：加入 pytest-asyncio，去掉未使用的 ffmpeg-python
+
+## v0.2.0 (2026-03-03 早期)
+
+### 新增
+- 工作区目录管理 (`src/utils/workspace.py`)
+- VisualExtractor 支持 start_time/end_time 切片参数
+- CLI 无字幕时挂起提示用户选择轨道
+
+## v0.1.0 (2026-03-02)
+
+### 新增
+- 项目骨架：CLI 入口 (argparse)、core/api 模块
+- B 站视频基础信息获取 (`get_video_info`)
+- CC 字幕拉取 (`get_video_subtitles`)
+- 火山引擎 ASR 集成 (`VolcengineASRClient`)
+- 音频提取器 (`AudioExtractor`)
+- 环境变量管理 (`config.py`，区分测试/生产环境)

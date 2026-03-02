@@ -20,10 +20,10 @@ def test_load_volc_config_dummy_value(monkeypatch):
 
 def test_load_volc_config_success_test_env(monkeypatch):
     monkeypatch.setenv("VOLC_ENV", "test")
-    monkeypatch.setenv("VOLC_TEST_API_KEY", "13b7cc0e-56b4-442f-9df1-bd2a65dbe2f6")
+    monkeypatch.setenv("VOLC_TEST_API_KEY", "test-dummy-key-for-unit-test")
 
     config = load_volc_config()
-    assert config["VOLC_API_KEY"] == "13b7cc0e-56b4-442f-9df1-bd2a65dbe2f6"
+    assert config["VOLC_API_KEY"] == "test-dummy-key-for-unit-test"
     assert config["VOLC_ENV"] == "测试环境"
 
 def test_load_volc_config_success_prod_env(monkeypatch):
