@@ -2,3 +2,4 @@ httpx
 pytest
 yt-dlp
 ffmpeg-python
+python-dotenv
