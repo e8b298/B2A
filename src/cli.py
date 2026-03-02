@@ -5,11 +5,15 @@ import sys
 from src.core.api import get_video_info, get_video_subtitles
 from src.utils.workspace import setup_workspace
 from src.visual.extractor import VisualExtractor
+from src.audio.extractor import AudioExtractor
+from src.core.asr import VolcengineASRClient
+from src.utils.config import MissingAuthError
 
 async def async_main():
     parser = argparse.ArgumentParser(description="BiliVision-Agent - B站多模态视频内容获取工具")
     parser.add_argument("url", help="B站视频URL或BV号")
     parser.add_argument("--visual", action="store_true", help="启用深度视觉提取（抽取视频关键帧）")
+    parser.add_argument("--asr", action="store_true", help="调用火山引擎提取音频轨并转文字")
     parser.add_argument("--start", help="截取开始时间，如 01:30", default=None)
     parser.add_argument("--end", help="截取结束时间，如 02:40", default=None)
     args = parser.parse_args()
@@ -36,9 +40,23 @@ async def async_main():
          print(f"【字幕截取】: {preview}...\n(共计 {len(subtitles)} 字符)")
     else:
          print("[!] 检测到该视频未提供 CC 字幕。这可能是一个解说视频或纯画面视频。")
-         if not args.visual:
-             print("你可以追加以下参数深度解析文本：\n  --visual : 下载视频或抽帧截图\n  --asr    : (开发中) 调用火山引擎提取音频轨")
+         if not args.visual and not args.asr:
+             print("你可以追加以下参数深度解析文本：\n  --visual : 下载视频或抽帧截图\n  --asr    : 调用火山引擎提取音频轨并转文字")
              return
+         if args.asr:
+             try:
+                 asr_client = VolcengineASRClient()
+                 print("\n[*] 启动音频轨道抽取...")
+                 dirs = setup_workspace()
+                 audio_extractor = AudioExtractor(bvid)
+                 audio_path = audio_extractor.download_audio(dirs["audios"], start_time=args.start, end_time=args.end)
+                 print("[*] 正在提交至火山引擎 ASR 进行语音识别...")
+                 text = await asr_client.transcribe_audio(audio_path)
+                 print(f"【ASR 提取结果】:\n{text}")
+             except MissingAuthError:
+                 print("\n[!] 错误: 未配置火山引擎鉴权信息，取消 ASR 音频识别。")
+                 return
+                 
     print("-" * 50)
 
     if args.visual:
