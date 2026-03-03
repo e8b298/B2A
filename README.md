@@ -1,6 +1,6 @@
 # B2A (Bilibili to Agents) - 哔哩哔哩 MCP 插件
 
-让 AI Agent（Claude、Cursor、Windsurf、Antigravity 等）原生具备「观看」和「倾听」B站视频能力的多模态 MCP 插件。
+让 AI Agent（Claude Code、Codex、Cursor、Antigravity、Windsurf 等）原生具备「观看」和「倾听」B站视频能力的多模态 MCP 插件。
 
 ## 🌟 核心能力
 B2A 为各种 Agent 提供了三条信息获取轨道：
@@ -23,24 +23,49 @@ pip install b2a777
 
 ## 🔌 MCP 接入指南 (核心用法)
 
-安装完成后，无论是你在使用本地终端命令行 AI，还是桌面级 AI IDE，配置都非常标准化。
+安装完成后，你可以将它原生挂载到各种大模型 IDE 的上下文中。**请根据你使用的客户端选择对应的配置方式：**
 
-### 1. Antigravity / Claude Code (命令行端)
-如果你正在终端使用 Antigravity 或官方的 Claude Code，只需直接在**对话输入框**内执行以下斜杠命令：
+### 1. Claude Code
+在 Claude Code 的聊天对话框中输入以下斜杠命令：
 ```text
 /mcp add b2a-vision b2a-mcp
 ```
-*(执行完毕后可输入 `/mcp list` 查看是否处于 Running 运行状态)*
+*(开发者本地测试模式：如果你正在修改源码，可直接指向源码挂载：`/mcp add b2a-vision python "绝对路径/src/mcp_server.py"`，这样保存代码即生效)*
 
-### 2. Cursor
+### 2. Codex
+由于 Codex 同样深度集成了指令模式，可以直接在其命令行终端中添加挂载命令：
+```text
+/mcp add b2a-vision b2a-mcp
+```
+
+### 3. Cursor
 1. 打开 **Cursor Settings** -> **Features** -> **MCP**
 2. 点击 **+ Add New MCP Server**
 3. **Type**: 选择 `command`
 4. **Name**: `b2a-vision`
-5. **Command**: `b2a-mcp` *(注意：如果是虚拟环境，请填入环境内 b2a-mcp 的绝对路径)*
+5. **Command**: `b2a-mcp` *(注意：如果是使用源码测试，Command 填 `python`，Args 填 `绝对路径/src/mcp_server.py`)*
 
-### 3. Windsurf / Claude Desktop
-在配置目录下的 `mcp_config.json` 或 `claude_desktop_config.json` 中添加：
+### 4. Antigravity
+作为直接的衍生环境，与 Claude Code 保持一致，在对话框内执行即可：
+```text
+/mcp add b2a-vision b2a-mcp
+```
+
+### 5. Windsurf
+在配置目录下的 `mcp_config.json` 中添加：
+```json
+{
+  "mcpServers": {
+    "b2a-vision": {
+      "command": "b2a-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+### 6. Claude Desktop
+在配置目录下的 `claude_desktop_config.json` 中添加：
 ```json
 {
   "mcpServers": {
