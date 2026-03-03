@@ -93,7 +93,8 @@ async def bilibili_extract_voice(url: str, start_time: Optional[str] = None, end
         asr_client = VolcengineASRClient()
         audio_extractor = AudioExtractor(bvid)
 
-        audio_path = audio_extractor.download_audio(
+        audio_path = await asyncio.to_thread(
+            audio_extractor.download_audio,
             dirs["audios"],
             start_time=target_start,
             end_time=end_time
@@ -135,8 +136,8 @@ async def bilibili_gen_storyboard(url: str, video_duration_seconds: int) -> Dict
         interval = max(int(video_duration_seconds / 30), 2)
 
         extractor = VisualExtractor(bvid, interval=interval, quality="360p")
-        video_path = extractor.download_video(dirs["downloads"])
-        frames = extractor.extract_frames(video_path, output_dir=dirs["frames"])
+        video_path = await asyncio.to_thread(extractor.download_video, dirs["downloads"])
+        frames = await asyncio.to_thread(extractor.extract_frames, video_path, output_dir=dirs["frames"])
 
         return {
             "bvid": bvid,
@@ -168,8 +169,10 @@ async def bilibili_drilldown_frames(url: str, start_time: str, end_time: str, qu
         dirs = setup_workspace(bvid=bvid)
 
         extractor = VisualExtractor(bvid, interval=interval_seconds, quality=quality)
-        video_path = extractor.download_video(dirs["downloads"], start_time=start_time, end_time=end_time)
-        frames = extractor.extract_frames(video_path, output_dir=dirs["frames"])
+        video_path = await asyncio.to_thread(
+            extractor.download_video, dirs["downloads"], start_time=start_time, end_time=end_time
+        )
+        frames = await asyncio.to_thread(extractor.extract_frames, video_path, output_dir=dirs["frames"])
 
         return {
             "bvid": bvid,
@@ -193,6 +196,10 @@ async def bilibili_cleanup_cache(bvid: str) -> Dict[str, Any]:
         bvid: The BV id of the target video (e.g., BV1xx411c7mD).
     """
     try:
+        # [SECURITY LOCK]: 防止传入路径回退或非法的字符串导致灾难性的越界删库
+        if not bvid or ".." in bvid or "/" in bvid or "\" in bvid or not str(bvid).startswith("BV"):
+            return {"error": f"Invalid BVID '{bvid}'. Cleanup rejected for safety reasons."}
+            
         dirs = setup_workspace(bvid=bvid)
         # 递归删除 frames, audios, downloads 等临时文件
         for dir_type, path in dirs.items():
