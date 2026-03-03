@@ -30,7 +30,6 @@ pip install b2a777
 ```text
 /mcp add b2a-vision b2a-mcp
 ```
-*(开发者本地测试模式：如果你正在修改源码，可直接指向源码挂载：`/mcp add b2a-vision python "绝对路径/src/mcp_server.py"`，这样保存代码即生效)*
 
 ### 2. Codex
 由于 Codex 同样深度集成了指令模式，可以直接在其命令行终端中添加挂载命令：
@@ -43,7 +42,6 @@ pip install b2a777
 2. 点击 **+ Add New MCP Server**
 3. **Type**: 选择 `command`
 4. **Name**: `b2a-vision`
-5. **Command**: `b2a-mcp` *(注意：如果是使用源码测试，Command 填 `python`，Args 填 `绝对路径/src/mcp_server.py`)*
 
 ### 4. Antigravity
 作为直接的衍生环境，与 Claude Code 保持一致，在对话框内执行即可：
