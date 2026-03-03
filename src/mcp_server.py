@@ -197,7 +197,7 @@ async def bilibili_cleanup_cache(bvid: str) -> Dict[str, Any]:
     """
     try:
         # [SECURITY LOCK]: 防止传入路径回退或非法的字符串导致灾难性的越界删库
-        if not bvid or ".." in bvid or "/" in bvid or "\" in bvid or not str(bvid).startswith("BV"):
+        if not bvid or ".." in bvid or "/" in bvid or "\\" in bvid or not str(bvid).startswith("BV"):
             return {"error": f"Invalid BVID '{bvid}'. Cleanup rejected for safety reasons."}
             
         dirs = setup_workspace(bvid=bvid)
