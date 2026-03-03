@@ -3,3 +3,4 @@ pytest
 pytest-asyncio
 yt-dlp
 python-dotenv
+mcp

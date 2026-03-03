@@ -147,6 +147,10 @@ async def async_main():
             print("[*] 语音识别轨道 (ASR)")
             print("=" * 50)
         try:
+            # [FAIL FAST]: 在花几分钟下载音频前，先校验 Key 是否存在
+            from src.utils.config import load_volc_config
+            load_volc_config()
+
             asr_client = VolcengineASRClient()
             if not json_mode:
                 print("[*] 启动音频轨道抽取...")
@@ -178,7 +182,9 @@ async def async_main():
                 output["asr"] = {"error": msg}
             else:
                 print(f"[!] 错误: {msg}")
-                print("[i] 请在 .env 文件中配置 VOLC_TEST_API_KEY 或 VOLC_PROD_API_KEY。")
+                from src.utils.config import _ENV_PATH
+                print(f"[i] 请在 {_ENV_PATH} 中配置 VOLC_TEST_API_KEY 或 VOLC_PROD_API_KEY。")
+                print(f"[i] 参考模板: {os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env.example')}")
 
     # ── 第四步：视觉抽帧轨道 ──
     if args.visual:

@@ -9,7 +9,7 @@ def test_load_volc_config_missing_auth(monkeypatch):
     with pytest.raises(MissingAuthError) as exc_info:
         load_volc_config()
 
-    assert "缺少豆包语音 API Key" in str(exc_info.value)
+    assert "Voice ASR API Key is missing" in str(exc_info.value)
 
 def test_load_volc_config_dummy_value(monkeypatch):
     monkeypatch.setenv("VOLC_TEST_API_KEY", "your_test_api_key_here")

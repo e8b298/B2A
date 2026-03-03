@@ -64,7 +64,7 @@ async def bilibili_get_info_subtitles(url: str, page: Optional[int] = None) -> D
             "duration_seconds": info.get("duration", 0),
             "page": target_page,
             "has_cc_subtitles": len(subtitles) > 0,
-            "subtitles": "\n".join(formatted_subs) if subtitles else "No CC subtitles available. Consider using bilibili_extract_voice for ASR."
+            "subtitles": "\n".join(formatted_subs) if subtitles else "这个视频没有自带字幕。你可以尝试去听一下视频内容（bilibili_extract_voice，注意只能识别人声语音，纯音乐/音效无法识别），或者去看一下视频画面（bilibili_gen_storyboard）来理解它。"
         }
     except Exception as e:
         return {"error": str(e)}
@@ -72,8 +72,10 @@ async def bilibili_get_info_subtitles(url: str, page: Optional[int] = None) -> D
 @mcp.tool()
 async def bilibili_extract_voice(url: str, start_time: Optional[str] = None, end_time: Optional[str] = None) -> Dict[str, Any]:
     """
-    [CRITICAL SAFETY LOCK]: NEVER call this tool automatically when the user just provides a URL.
-    [CRITICAL EQ RULE]: Speak naturally! Tell the user: "这视频好像没字幕诶，你想让我下载它的原声帮你听写下来吗？可能得稍微跑个几十秒~" ONLY call this tool if they agree.
+    [CRITICAL SAFETY LOCK]: NEVER call this tool in the same turn as your question. You MUST ask the user first AND wait for their explicit reply in a SEPARATE turn before calling this tool. Asking and calling in the same message is FORBIDDEN.
+    [CRITICAL EQ RULE]: You are trying to LISTEN to the video to understand it, not "extracting audio for the user". Speak naturally! Tell the user: "这个视频没有字幕，我可以试着去听一下视频里说了什么吗？可能需要稍等几十秒哦~ 不过要提醒你，我的'听力'其实是语音识别，所以只能听懂人说的话，纯音乐或音效我是听不出来的～" Then STOP and WAIT for the user to reply. ONLY call this tool AFTER the user agrees in a subsequent message.
+    [ENV RELOAD NOTE]: If the user JUST provided an API Key and you saved it to .env, do NOT retry this tool immediately. The MCP server process needs to be restarted to pick up the new key. Tell the user naturally: "Key 已经帮你存好啦！不过需要在设置里重启一下 MCP 服务让配置生效，重启完告诉我一声，我马上继续～" Do NOT loop-retry after a MissingAuthError if the key was just written.
+    [WAIT TIME WARNING]: This tool may take several minutes to complete. BEFORE calling it, send a message to the user: "好，让我去听听看，视频比较长可能需要等几分钟～"
 
     Extract audio track and perform ASR (Speech-to-Text) using Volcengine API.
     Use this when a video has NO CC subtitles, or you need the absolute true transcript.
@@ -83,10 +85,10 @@ async def bilibili_extract_voice(url: str, start_time: Optional[str] = None, end
         end_time: Optional end offset (e.g., "05:00")
     """
     try:
-        # [FAIL FAST]: 在执行长达数分钟的下载前，必定先校验 API Key 是否存在！
+        # [FAIL FAST]: 下载前先校验 Key，避免等几分钟下载完才发现没有 Key
         from src.utils.config import load_volc_config
         load_volc_config()
-        
+
         parsed = await parse_video_url(url)
         bvid = parsed.bvid
 
@@ -109,6 +111,10 @@ async def bilibili_extract_voice(url: str, start_time: Optional[str] = None, end
             start_offset=target_start
         )
 
+        # 无人声时给 AI 明确的引导，而不是返回空字符串
+        if not text or not text.strip():
+            text = "[ASR 未识别到人声内容。这段音频可能是纯音乐、环境音或无对白片段，请据此回复用户。]"
+
         return {
             "bvid": bvid,
             "asr_transcript": text,
@@ -121,8 +127,10 @@ async def bilibili_extract_voice(url: str, start_time: Optional[str] = None, end
 @mcp.tool()
 async def bilibili_gen_storyboard(url: str, video_duration_seconds: int) -> Dict[str, Any]:
     """
-    [CRITICAL SAFETY LOCK]: NEVER call this tool automatically when the user just provides a URL.
-    [CRITICAL EQ RULE]: Do NOT act like a robot! DO NOT recite your plans or apologize. Simply ask the user naturally like a friend: "要不要我给你截个全景图看看大致剧情呀？大概需要等一小会儿。" ONLY call this tool if they say yes.
+    [CRITICAL SAFETY LOCK]: NEVER call this tool in the same turn as your question. You MUST ask the user first AND wait for their explicit reply in a SEPARATE turn before calling this tool. Asking and calling in the same message is FORBIDDEN.
+    [CRITICAL EQ RULE]: You are trying to WATCH the video to understand it, not "extracting frames for the user". Do NOT act like a robot! Simply ask the user naturally like a friend: "我可以看一下这个视频的画面吗？我会快速浏览一遍大致了解内容，可能需要等一小会儿。" Then STOP and WAIT for the user to reply. ONLY call this tool AFTER the user agrees in a subsequent message.
+    [PREREQUISITE CHECK]: Do NOT call this tool if there is an unresolved ASR/API Key error from a previous tool call in this conversation. Resolve the auth issue first before switching to visual analysis.
+    [WAIT TIME WARNING]: This tool downloads a full video and may take 2-5 minutes. BEFORE calling it, tell the user: "好，让我去看看这个视频，需要一点时间加载画面，稍等哦～"
 
     [Storyboard Reading]: This tool acts as a radar. It uniformly samples roughly 30 frames across the entire video.
     ALWAYS use this BEFORE drilling down into specific timeframes to avoid missing plot twists.
@@ -159,6 +167,7 @@ async def bilibili_drilldown_frames(url: str, start_time: str, end_time: str, qu
     """
     [Drilldown Reading]: Use this AFTER looking at the storyboard (bilibili_gen_storyboard), or if you strictly need a specific time segment.
     Downloads and extracts frames strictly within the [start_time, end_time] window.
+    [WAIT TIME WARNING]: This tool downloads a video segment and may take 1-3 minutes. BEFORE calling it, tell the user: "让我仔细看看这一段的画面，稍等一下～"
 
     Args:
         url: The video URL or BV id.
@@ -204,16 +213,11 @@ async def bilibili_cleanup_cache(bvid: str) -> Dict[str, Any]:
         if not bvid or ".." in bvid or "/" in bvid or "\\" in bvid or not str(bvid).startswith("BV"):
             return {"error": f"Invalid BVID '{bvid}'. Cleanup rejected for safety reasons."}
             
-        dirs = setup_workspace(bvid=bvid)
-        # 递归删除 frames, audios, downloads 等临时文件
-        for dir_type, path in dirs.items():
-            if os.path.exists(path):
-                shutil.rmtree(path)
-
-        # 尝试删除外层空文件夹 (G:\fanzhongli\local_cache\B2A_Workspace\BVxxxx)
-        workspace_dir = os.path.dirname(list(dirs.values())[0])
-        if os.path.exists(workspace_dir):
-            shutil.rmtree(workspace_dir)
+        # 直接用绝对路径推算目标目录，不通过 setup_workspace（避免先建目录再删）
+        from src.utils.workspace import _DEFAULT_BASE
+        root_path = os.path.join(_DEFAULT_BASE, bvid)
+        if os.path.exists(root_path):
+            shutil.rmtree(root_path)
 
         return {
             "status": "success",

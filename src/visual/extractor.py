@@ -47,26 +47,19 @@ class VisualExtractor:
         self.interval = interval
         self.quality = quality
 
-    @staticmethod
-    def _parse_time(time_str: str) -> float:
-        parts = time_str.split(':')
-        seconds = 0.0
-        for part in parts:
-            seconds = seconds * 60 + float(part)
-        return seconds
-
     def _get_height_limit(self) -> int:
         mapping = {"360p": 360, "480p": 480, "720p": 720, "1080p": 1080}
         return mapping.get(self.quality, 480)
 
     def _make_base_opts(self):
         import time
-        # 【物理防卡死核心钩子】：强制斩杀龟速下流（限流防挂起）
-        start_time = time.time()
+        # 计时从第一次收到 downloading 状态时才开始，避免 info fetch 阶段误触发
+        download_started_at = [None]
         def download_timeout_hook(d):
             if d['status'] == 'downloading':
-                # 如果超过 60 秒都还没下完（被 B 站恶意降频到几KB），抛出异常直接把底层砸死！
-                if time.time() - start_time > 60:
+                if download_started_at[0] is None:
+                    download_started_at[0] = time.time()
+                elif time.time() - download_started_at[0] > 60:
                     raise Exception("B2A_HARD_TIMEOUT: 视频已被强制阻断！由于遭到严苛限流或网速过慢，此视频无法在1分钟内完成拉取。")
         h = self._get_height_limit()
         return {
@@ -114,8 +107,14 @@ class VisualExtractor:
                     with yt_dlp.YoutubeDL(opts) as ydl:
                         ydl.download([url])
                     return output_path
-                except Exception:
+                except Exception as e:
                     _safe_remove(output_path)
+                    if "B2A_HARD_TIMEOUT" in str(e):
+                        raise DownloadTimeoutError(
+                            "[B2A 下载超时] 视频下载因限流被强制熔断，已自动清理残留文件。"
+                            "可能原因：B站风控拦截了无Cookie的请求，或当前网络过慢。"
+                            "请告知用户检查网络后重试，不会浪费任何磁盘空间。"
+                        ) from e
                     print("[i] yt-dlp native range failed, fallback to full download + trim...")
 
                 # S2: full download then ffmpeg trim
@@ -151,9 +150,15 @@ class VisualExtractor:
                     "请告知用户检查网络后重试，不会浪费任何磁盘空间。"
                 ) from e
             raise
-        except Exception:
+        except Exception as e:
             _safe_remove(output_path)
             _safe_remove(full_tmp_path)
+            if "B2A_HARD_TIMEOUT" in str(e):
+                raise DownloadTimeoutError(
+                    "[B2A 下载超时] 视频下载因限流被强制熔断，已自动清理残留文件。"
+                    "可能原因：B站风控拦截了无Cookie的请求，或当前网络过慢。"
+                    "请告知用户检查网络后重试，不会浪费任何磁盘空间。"
+                ) from e
             raise
 
     def _trim_with_ffmpeg(self, input_path: str, output_path: str, start_time: str, end_time: str):

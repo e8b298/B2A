@@ -11,10 +11,14 @@ MAX_CHUNK_DURATION = 60
 
 class VolcengineASRClient:
     def __init__(self):
+        # 不在初始化时读取 Key，避免 MCP 长驻进程缓存旧环境变量
+        self.url = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"
+
+    def _load_credentials(self):
+        """在实际调用前才读取 Key，保证每次都能拿到最新的 .env 值"""
         config = load_volc_config()
         self.api_key = config["VOLC_API_KEY"]
         self.env_label = config["VOLC_ENV"]
-        self.url = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"
 
     @staticmethod
     def _parse_time(time_str: str) -> float:
@@ -71,6 +75,7 @@ class VolcengineASRClient:
         - 自动检测音频时长，超过阈值则分片处理
         - start_offset: 切片起始时间，用于修正为视频绝对时间戳
         """
+        self._load_credentials()
         print(f"[i] 当前环境: {self.env_label}")
 
         offset_ms = 0
@@ -124,7 +129,7 @@ class VolcengineASRClient:
 
         if all_lines:
             return "\n".join(all_lines)
-        return "[ASR 未能识别出文本内容]"
+        return "[ASR 未识别到人声内容。这段音频可能是纯音乐、环境音或无对白片段。]"
 
     async def _call_asr_api(self, encoded_audio: str, audio_path: str, offset_ms: int) -> str:
         """向火山引擎发送单次 ASR 请求"""
@@ -177,14 +182,21 @@ class VolcengineASRClient:
                     return f"[ASR 错误 {response.status_code}]"
 
                 resp_json = response.json()
-                result = self._extract_result(resp_json, offset_ms)
-                if result:
-                    return result
 
-                print(f"[!] ASR 第 {attempt+1} 次尝试未获得有效结果")
+                # 区分"API 正常返回但无人声"和"API 异常需重试"
+                if resp_json.get("code", -1) == 0 or "result" in resp_json:
+                    # API 正常响应，提取结果
+                    result = self._extract_result(resp_json, offset_ms)
+                    if result:
+                        return result
+                    # API 正常但无内容 = 纯音乐/无人声，不需要重试
+                    return ""
+
+                # API 返回了异常 code，值得重试
+                print(f"[!] ASR 第 {attempt+1} 次尝试返回异常 code: {resp_json.get('code')}")
                 if attempt < max_retries - 1:
                     continue
-                return "[ASR 未能识别出文本内容]"
+                return "[ASR 未识别到人声内容。这段音频可能是纯音乐、环境音或无对白片段。]"
 
             except Exception as e:
                 print(f"[!] ASR 异常 (第 {attempt+1} 次): {e}")

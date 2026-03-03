@@ -17,11 +17,13 @@ class AudioExtractor:
 
     def _make_base_opts(self):
         import time
-        start_time = time.time()
+        # 计时从第一次收到 downloading 状态时才开始，避免 info fetch 阶段误触发
+        download_started_at = [None]
         def download_timeout_hook(d):
             if d['status'] == 'downloading':
-                # 音频提取不应该超过90秒，一旦被B站挂起滴灌，强制熔断！
-                if time.time() - start_time > 90:
+                if download_started_at[0] is None:
+                    download_started_at[0] = time.time()
+                elif time.time() - download_started_at[0] > 90:
                     raise Exception("B2A_HARD_TIMEOUT: 视频音频已被强制阻断！遭到B站严苛限流或网路过慢，无法在90秒内完成。")
         return {
             'quiet': True,
@@ -48,6 +50,14 @@ class AudioExtractor:
                     ydl.download([self.url])
                 return
             except Exception as e:
+                # B2A_HARD_TIMEOUT 是我们自己的熔断异常，不能被吞掉降级重试
+                if "B2A_HARD_TIMEOUT" in str(e):
+                    _safe_remove(output_path)
+                    raise DownloadTimeoutError(
+                        "[B2A 下载超时] 音频下载因限流被强制熔断，已自动清理残留文件。"
+                        "可能原因：B站风控拦截了无Cookie的请求，或当前网络过慢。"
+                        "请告知用户检查网络后重试，不会浪费任何磁盘空间。"
+                    ) from e
                 last_err = e
                 _safe_remove(output_path)
                 continue
@@ -142,10 +152,4 @@ class AudioExtractor:
             check=True, timeout=300
         )
 
-    @staticmethod
-    def _parse_time(time_str: str) -> float:
-        parts = time_str.split(':')
-        seconds = 0
-        for part in parts:
-            seconds = seconds * 60 + float(part)
-        return seconds
+

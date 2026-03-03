@@ -4,11 +4,10 @@ from src.core.asr import VolcengineASRClient, MAX_CHUNK_DURATION
 from src.utils.config import MissingAuthError
 
 def test_asr_client_init_without_env():
-    try:
-        client = VolcengineASRClient()
-        assert client.api_key is not None
-    except MissingAuthError:
-        pass
+    # 懒加载改造后，__init__ 不再读取 Key，只验证实例能正常创建
+    client = VolcengineASRClient()
+    assert hasattr(client, 'url')
+    assert not hasattr(client, 'api_key')
 
 def test_asr_parse_time():
     """测试时间解析工具方法"""
