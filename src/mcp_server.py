@@ -2,6 +2,7 @@ import asyncio
 from typing import Optional, Dict, Any, List
 from mcp.server.fastmcp import FastMCP
 import os
+import shutil
 
 from src.core.api import get_video_info, get_video_subtitles, get_page_list, get_cid_by_page
 from src.utils.url_parser import parse_video_url
@@ -34,9 +35,9 @@ async def bilibili_get_info_subtitles(url: str, page: Optional[int] = None) -> D
         parsed = await parse_video_url(url)
         bvid = parsed.bvid
         target_page = page or parsed.page
-        
+
         info = await get_video_info(bvid)
-        
+
         cid = None
         pages = await get_page_list(bvid)
         if len(pages) > 1:
@@ -60,6 +61,7 @@ async def bilibili_get_info_subtitles(url: str, page: Optional[int] = None) -> D
             "title": info.get("title", ""),
             "description": info.get("desc", ""),
             "duration": _format_timestamp(info.get("duration", 0)),
+            "duration_seconds": info.get("duration", 0),
             "page": target_page,
             "has_cc_subtitles": len(subtitles) > 0,
             "subtitles": "\n".join(formatted_subs) if subtitles else "No CC subtitles available. Consider using bilibili_extract_voice for ASR."
@@ -70,6 +72,9 @@ async def bilibili_get_info_subtitles(url: str, page: Optional[int] = None) -> D
 @mcp.tool()
 async def bilibili_extract_voice(url: str, start_time: Optional[str] = None, end_time: Optional[str] = None) -> Dict[str, Any]:
     """
+    [CRITICAL SAFETY LOCK]: NEVER call this tool automatically when the user just provides a URL.
+    You MUST stop and explicitly ask the user "是否需要我为您消耗时间和空间去下载视频并提取语音？" ONLY call this tool if they say YES.
+
     Extract audio track and perform ASR (Speech-to-Text) using Volcengine API.
     Use this when a video has NO CC subtitles, or you need the absolute true transcript.
     Args:
@@ -80,63 +85,128 @@ async def bilibili_extract_voice(url: str, start_time: Optional[str] = None, end
     try:
         parsed = await parse_video_url(url)
         bvid = parsed.bvid
-        
+
         target_start = start_time or parsed.time_start
-        
+
         dirs = setup_workspace(bvid=bvid)
-        
+
         asr_client = VolcengineASRClient()
         audio_extractor = AudioExtractor(bvid)
-        
+
         audio_path = audio_extractor.download_audio(
             dirs["audios"],
             start_time=target_start,
             end_time=end_time
         )
-        
+
         text = await asr_client.transcribe_audio(
             audio_path,
             start_offset=target_start
         )
-        
+
         return {
             "bvid": bvid,
             "asr_transcript": text,
             "audio_file_saved_at": audio_path,
-            "note": "Timestamps are included in the transcript."
+            "note": "Timestamps are included in the transcript. PLEASE call bilibili_cleanup_cache when you are done with this task!"
         }
     except Exception as e:
-        return {"error": f"ASR Extraction failed. Make sure VOLC_API_KEY is configured in .env. Details: {str(e)}"}
+        return {"error": str(e)}
 
 @mcp.tool()
-async def bilibili_extract_frames(url: str, interval_seconds: int = 10, start_time: Optional[str] = None, end_time: Optional[str] = None) -> Dict[str, Any]:
+async def bilibili_gen_storyboard(url: str, video_duration_seconds: int) -> Dict[str, Any]:
     """
-    Extract visual keyframes from a Bilibili video as Local Image Files.
-    Use this when you need to "SEE" the video content (graphs, slides, gameplay).
-    The tool returns a list of local image paths. YOU MUST USE YOUR 'Read' TOOL ON THESE IMAGES to actually inspect them.
+    [CRITICAL SAFETY LOCK]: NEVER call this tool automatically when the user just provides a URL.
+    You MUST stop and explicitly ask the user "是否需要我为您下载视频并抽取全景画面（故事板）？" ONLY call this tool if they say YES.
+
+    [Storyboard Reading]: This tool acts as a radar. It uniformly samples roughly 30 frames across the entire video.
+    ALWAYS use this BEFORE drilling down into specific timeframes to avoid missing plot twists.
+    Quality is strictly forced to 360p to save time and bandwidth.
+
     Args:
         url: The video URL or BV id.
-        interval_seconds: Extract a frame every X seconds (default: 10).
-        start_time: Optional start offset (e.g., "01:30") to avoid downloading the whole video.
-        end_time: Optional end offset (e.g., "05:00")
+        video_duration_seconds: The total duration in seconds (get this from bilibili_get_info_subtitles first).
     """
     try:
         parsed = await parse_video_url(url)
         bvid = parsed.bvid
-        
-        target_start = start_time or parsed.time_start
         dirs = setup_workspace(bvid=bvid)
-        
-        extractor = VisualExtractor(bvid, interval=interval_seconds)
-        
-        video_path = extractor.download_video(dirs["downloads"], start_time=target_start, end_time=end_time)
+
+        interval = max(int(video_duration_seconds / 30), 2)
+
+        extractor = VisualExtractor(bvid, interval=interval, quality="360p")
+        video_path = extractor.download_video(dirs["downloads"])
         frames = extractor.extract_frames(video_path, output_dir=dirs["frames"])
-        
+
         return {
             "bvid": bvid,
-            "action_required": "USE YOUR Read TOOL on the 'extracted_frames' paths below to view the images visually.",
+            "action_required": "USE YOUR Read TOOL to read the 'extracted_frames' below to grasp the whole story rhythm. Then, if needed, use bilibili_drilldown_frames to inspect specific interesting ranges.",
+            "interval_seconds_used": interval,
+            "quality": "360p",
+            "extracted_frames": frames,
+            "note": "If you cannot read text clearly due to 360p quality, explicitly ask the user for permission to use bilibili_drilldown_frames with 720p/1080p for a SPECIFIC SHORT timeframe."
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@mcp.tool()
+async def bilibili_drilldown_frames(url: str, start_time: str, end_time: str, quality: str = "480p", interval_seconds: int = 5) -> Dict[str, Any]:
+    """
+    [Drilldown Reading]: Use this AFTER looking at the storyboard (bilibili_gen_storyboard), or if you strictly need a specific time segment.
+    Downloads and extracts frames strictly within the [start_time, end_time] window.
+
+    Args:
+        url: The video URL or BV id.
+        start_time: Mandatory start offset (e.g., "05:00").
+        end_time: Mandatory end offset (e.g., "05:30"). Keep the window small (under 3 mins ideally).
+        quality: "360p", "480p", "720p", "1080p". Default 480p. ONLY request "720p" or "1080p" if you proved the text is unreadable AND the user approved it.
+        interval_seconds: Extract a frame every X seconds (default: 5).
+    """
+    try:
+        parsed = await parse_video_url(url)
+        bvid = parsed.bvid
+        dirs = setup_workspace(bvid=bvid)
+
+        extractor = VisualExtractor(bvid, interval=interval_seconds, quality=quality)
+        video_path = extractor.download_video(dirs["downloads"], start_time=start_time, end_time=end_time)
+        frames = extractor.extract_frames(video_path, output_dir=dirs["frames"])
+
+        return {
+            "bvid": bvid,
+            "action_required": f"USE YOUR Read TOOL on the 'extracted_frames' below.",
+            "time_window": f"{start_time} to {end_time}",
+            "quality": quality,
             "interval_seconds": interval_seconds,
             "extracted_frames": frames,
+            "note": "When you have finished analyzing the images and answered the user, YOU MUST call bilibili_cleanup_cache to free space!"
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@mcp.tool()
+async def bilibili_cleanup_cache(bvid: str) -> Dict[str, Any]:
+    """
+    [CRITICAL CLEANUP TOOL]: Calling this tool deletes all downloaded videos, audio, and extracted frames for a given video.
+    You MUST call this tool automatically at the end of your conversation/task when you have provided the final answer to the user to prevent disk bloating.
+
+    Args:
+        bvid: The BV id of the target video (e.g., BV1xx411c7mD).
+    """
+    try:
+        dirs = setup_workspace(bvid=bvid)
+        # 递归删除 frames, audios, downloads 等临时文件
+        for dir_type, path in dirs.items():
+            if os.path.exists(path):
+                shutil.rmtree(path)
+
+        # 尝试删除外层空文件夹 (G:\fanzhongli\local_cache\B2A_Workspace\BVxxxx)
+        workspace_dir = os.path.dirname(list(dirs.values())[0])
+        if os.path.exists(workspace_dir):
+            shutil.rmtree(workspace_dir)
+
+        return {
+            "status": "success",
+            "message": f"Successfully cleaned up all media cache for {bvid}. Disk space recovered."
         }
     except Exception as e:
         return {"error": str(e)}
