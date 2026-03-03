@@ -1,4 +1,4 @@
-# B2A (Bilibili to Agents) - 哔哩哔哩 MCP 插件
+# B2A
 
 让 AI Agent（Claude Code、Codex、Cursor、Antigravity、Windsurf 等）原生具备「观看」和「倾听」B站视频能力的多模态 MCP 插件。
 
