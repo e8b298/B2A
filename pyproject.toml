@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "b2a777"
 version = "0.5.5"
-description = "B2A (Bilibili to Agents) — 让 AI Agent 能"观看"和"倾听"B站视频的多模态 MCP 插件"
+description = "B2A (Bilibili to Agents) — 让 AI Agent 能观看和倾听B站视频的多模态 MCP 插件"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [{name = "fanzhongli"}]
