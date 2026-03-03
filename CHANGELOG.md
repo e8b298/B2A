@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.4 (2026-03-03)
+
+### 文档更新
+- **排版优化**：彻底分离各个 MCP 客户端（Claude Code, Codex, Cursor, Antigravity, Windsurf, Claude Desktop）的接入指南，不再合并说明，降低用户配置门槛。
+
 ## v0.4.2 (2026-03-03)
 
 ### 修复与文档更新
