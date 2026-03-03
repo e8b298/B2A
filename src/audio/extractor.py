@@ -16,10 +16,18 @@ class AudioExtractor:
         self.url = f"https://www.bilibili.com/video/{self.bvid}"
 
     def _make_base_opts(self):
+        import time
+        start_time = time.time()
+        def download_timeout_hook(d):
+            if d['status'] == 'downloading':
+                # 音频提取不应该超过90秒，一旦被B站挂起滴灌，强制熔断！
+                if time.time() - start_time > 90:
+                    raise Exception("B2A_HARD_TIMEOUT: 视频音频已被强制阻断！遭到B站严苛限流或网路过慢，无法在90秒内完成。")
         return {
             'quiet': True,
             'no_warnings': True,
             'socket_timeout': self.SOCKET_TIMEOUT,
+            'progress_hooks': [download_timeout_hook],
             'retries': self.MAX_RETRIES,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',

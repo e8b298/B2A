@@ -73,7 +73,7 @@ async def bilibili_get_info_subtitles(url: str, page: Optional[int] = None) -> D
 async def bilibili_extract_voice(url: str, start_time: Optional[str] = None, end_time: Optional[str] = None) -> Dict[str, Any]:
     """
     [CRITICAL SAFETY LOCK]: NEVER call this tool automatically when the user just provides a URL.
-    You MUST stop and explicitly ask the user "是否需要我为您消耗时间和空间去下载视频并提取语音？" ONLY call this tool if they say YES.
+    [CRITICAL EQ RULE]: Speak naturally! Tell the user: "这视频好像没字幕诶，你想让我下载它的原声帮你听写下来吗？可能得稍微跑个几十秒~" ONLY call this tool if they agree.
 
     Extract audio track and perform ASR (Speech-to-Text) using Volcengine API.
     Use this when a video has NO CC subtitles, or you need the absolute true transcript.
@@ -83,6 +83,10 @@ async def bilibili_extract_voice(url: str, start_time: Optional[str] = None, end
         end_time: Optional end offset (e.g., "05:00")
     """
     try:
+        # [FAIL FAST]: 在执行长达数分钟的下载前，必定先校验 API Key 是否存在！
+        from src.utils.config import load_volc_config
+        load_volc_config()
+        
         parsed = await parse_video_url(url)
         bvid = parsed.bvid
 
@@ -118,7 +122,7 @@ async def bilibili_extract_voice(url: str, start_time: Optional[str] = None, end
 async def bilibili_gen_storyboard(url: str, video_duration_seconds: int) -> Dict[str, Any]:
     """
     [CRITICAL SAFETY LOCK]: NEVER call this tool automatically when the user just provides a URL.
-    You MUST stop and explicitly ask the user "是否需要我为您下载视频并抽取全景画面（故事板）？" ONLY call this tool if they say YES.
+    [CRITICAL EQ RULE]: Do NOT act like a robot! DO NOT recite your plans or apologize. Simply ask the user naturally like a friend: "要不要我给你截个全景图看看大致剧情呀？大概需要等一小会儿。" ONLY call this tool if they say yes.
 
     [Storyboard Reading]: This tool acts as a radar. It uniformly samples roughly 30 frames across the entire video.
     ALWAYS use this BEFORE drilling down into specific timeframes to avoid missing plot twists.
@@ -141,7 +145,7 @@ async def bilibili_gen_storyboard(url: str, video_duration_seconds: int) -> Dict
 
         return {
             "bvid": bvid,
-            "action_required": "USE YOUR Read TOOL to read the 'extracted_frames' below to grasp the whole story rhythm. Then, if needed, use bilibili_drilldown_frames to inspect specific interesting ranges.",
+            "action_required": "[SYSTEM EVENT: Storyboard is ready. YOU MUST NOT explain the process. Directly look at the images in extracted_frames and answer the user.]",
             "interval_seconds_used": interval,
             "quality": "360p",
             "extracted_frames": frames,

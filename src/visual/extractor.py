@@ -60,12 +60,21 @@ class VisualExtractor:
         return mapping.get(self.quality, 480)
 
     def _make_base_opts(self):
+        import time
+        # 【物理防卡死核心钩子】：强制斩杀龟速下流（限流防挂起）
+        start_time = time.time()
+        def download_timeout_hook(d):
+            if d['status'] == 'downloading':
+                # 如果超过 60 秒都还没下完（被 B 站恶意降频到几KB），抛出异常直接把底层砸死！
+                if time.time() - start_time > 60:
+                    raise Exception("B2A_HARD_TIMEOUT: 视频已被强制阻断！由于遭到严苛限流或网速过慢，此视频无法在1分钟内完成拉取。")
         h = self._get_height_limit()
         return {
             'quiet': True,
             'no_warnings': True,
             'socket_timeout': self.SOCKET_TIMEOUT,
             'retries': self.MAX_RETRIES,
+            'progress_hooks': [download_timeout_hook],
             'format': f'bestvideo[height<={h}][ext=mp4]/bestvideo[height<={h}]/bestvideo',
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
