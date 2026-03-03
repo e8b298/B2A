@@ -1,9 +1,16 @@
 import os
+import shutil
 import subprocess
 import yt_dlp
 
+from src.visual.extractor import FFmpegNotFoundError, DownloadTimeoutError, _check_ffmpeg, _safe_remove
+
 
 class AudioExtractor:
+    SOCKET_TIMEOUT = 30
+    MAX_RETRIES = 3
+    FFMPEG_TIMEOUT = 300
+
     def __init__(self, bvid: str):
         self.bvid = bvid
         self.url = f"https://www.bilibili.com/video/{self.bvid}"
@@ -12,6 +19,8 @@ class AudioExtractor:
         return {
             'quiet': True,
             'no_warnings': True,
+            'socket_timeout': self.SOCKET_TIMEOUT,
+            'retries': self.MAX_RETRIES,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'Referer': 'https://www.bilibili.com'
@@ -20,26 +29,35 @@ class AudioExtractor:
 
     def _download_audio_simple(self, output_path: str):
         """
-        多级回退下载音频：
-        1. bestaudio[ext=m4a] 纯音频流
-        2. bestaudio 任意格式
+        multi-fallback audio download with timeout protection.
         """
         base = self._make_base_opts()
+        last_err = None
         for fmt in ['bestaudio[ext=m4a]/bestaudio', 'bestaudio/best']:
             try:
                 opts = {**base, 'format': fmt, 'outtmpl': output_path}
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.download([self.url])
                 return
-            except Exception:
+            except Exception as e:
+                last_err = e
+                _safe_remove(output_path)
                 continue
-        raise RuntimeError(f"无法下载音频: {self.bvid}")
+
+        err_str = str(last_err).lower() if last_err else ""
+        if "timed out" in err_str or "timeout" in err_str:
+            raise DownloadTimeoutError(
+                "[B2A 下载超时] 音频下载因网络超时被强制中止，已自动清理残留文件。"
+                "可能原因：B站风控拦截了无Cookie的请求，或当前网络不稳定。"
+                "请告知用户检查网络后重试，不会浪费任何磁盘空间。"
+            ) from last_err
+        raise RuntimeError(f"无法下载音频: {self.bvid}") from last_err
 
     def download_audio(self, output_dir: str, start_time: str = None, end_time: str = None) -> str:
         """
-        下载音频流。支持 start_time/end_time 切片。
-        策略：先尝试 yt-dlp 原生切片，失败则回退为下载完整音频后用 ffmpeg 裁剪。
+        Audio download with timeout and cleanup.
         """
+        _check_ffmpeg()
         os.makedirs(output_dir, exist_ok=True)
 
         start_str = start_time.replace(":", "") if start_time else "start"
@@ -51,51 +69,58 @@ class AudioExtractor:
             filename = f"{self.bvid}.m4a"
 
         output_path = os.path.abspath(os.path.join(output_dir, filename))
+        full_tmp_path = None
 
-        if start_time and end_time:
-            # 策略一：尝试 yt-dlp 原生切片
-            try:
-                base = self._make_base_opts()
-                opts = {
-                    **base,
-                    'format': 'bestaudio[ext=m4a]/bestaudio',
-                    'outtmpl': output_path,
-                    'download_ranges': yt_dlp.utils.download_range_func(
-                        None,
-                        [(yt_dlp.utils.parse_duration(start_time), yt_dlp.utils.parse_duration(end_time))]
-                    ),
-                    'force_keyframes_at_cuts': True,
-                }
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    ydl.download([self.url])
+        try:
+            if start_time and end_time:
+                # S1: yt-dlp native range
+                try:
+                    base = self._make_base_opts()
+                    opts = {
+                        **base,
+                        'format': 'bestaudio[ext=m4a]/bestaudio',
+                        'outtmpl': output_path,
+                        'download_ranges': yt_dlp.utils.download_range_func(
+                            None,
+                            [(yt_dlp.utils.parse_duration(start_time), yt_dlp.utils.parse_duration(end_time))]
+                        ),
+                        'force_keyframes_at_cuts': True,
+                    }
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        ydl.download([self.url])
+                    return output_path
+                except Exception:
+                    _safe_remove(output_path)
+                    print("[i] yt-dlp native range failed, fallback to full download + trim...")
+
+                # S2: full download then ffmpeg trim
+                full_tmp_path = os.path.abspath(os.path.join(output_dir, f"{self.bvid}_full_tmp.m4a"))
+                self._download_audio_simple(full_tmp_path)
+
+                try:
+                    self._trim_with_ffmpeg(full_tmp_path, output_path, start_time, end_time)
+                    _safe_remove(full_tmp_path)
+                except Exception:
+                    print("[i] ffmpeg trim failed, using full file")
+                    if os.path.exists(full_tmp_path):
+                        os.rename(full_tmp_path, output_path)
+
                 return output_path
-            except Exception:
-                print("[i] yt-dlp 原生切片失败，回退为下载后裁剪...")
-
-            # 策略二：下载完整音频，再用 ffmpeg 裁剪
-            full_path = os.path.abspath(os.path.join(output_dir, f"{self.bvid}_full_tmp.m4a"))
-            self._download_audio_simple(full_path)
-
-            try:
-                self._trim_with_ffmpeg(full_path, output_path, start_time, end_time)
-            except Exception:
-                print("[i] ffmpeg 裁剪失败，使用完整文件")
-                os.rename(full_path, output_path)
+            else:
+                self._download_audio_simple(output_path)
                 return output_path
 
-            try:
-                os.remove(full_path)
-            except OSError:
-                pass
-
-            return output_path
-        else:
-            self._download_audio_simple(output_path)
-            return output_path
+        except (DownloadTimeoutError, FFmpegNotFoundError):
+            _safe_remove(output_path)
+            _safe_remove(full_tmp_path)
+            raise
+        except Exception:
+            _safe_remove(output_path)
+            _safe_remove(full_tmp_path)
+            raise
 
     @staticmethod
     def _trim_with_ffmpeg(input_path: str, output_path: str, start_time: str, end_time: str):
-        """用 ffmpeg -ss/-to 裁剪音频片段"""
         cmd = [
             'ffmpeg', '-y',
             '-ss', start_time,
@@ -104,11 +129,13 @@ class AudioExtractor:
             '-c', 'copy',
             output_path
         ]
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        subprocess.run(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=True, timeout=300
+        )
 
     @staticmethod
     def _parse_time(time_str: str) -> float:
-        """解析 HH:MM:SS 或 MM:SS 格式为秒数"""
         parts = time_str.split(':')
         seconds = 0
         for part in parts:

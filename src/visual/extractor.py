@@ -1,44 +1,84 @@
 import os
+import shutil
 import subprocess
-import tempfile
 import yt_dlp
 
 
+class FFmpegNotFoundError(Exception):
+    pass
+
+
+class DownloadTimeoutError(Exception):
+    pass
+
+
+def _check_ffmpeg():
+    """前置检测 ffmpeg 是否可用，不可用时抛出友好错误"""
+    if not shutil.which("ffmpeg"):
+        raise FFmpegNotFoundError(
+            "[B2A 环境检测] 当前系统未安装 ffmpeg，视频抽帧功能无法使用。"
+            "请告知用户：只需运行一条命令即可安装——"
+            "Windows: winget install Gyan.FFmpeg | "
+            "Mac: brew install ffmpeg | "
+            "Linux: sudo apt install ffmpeg。"
+            "安装完成后用户告知你即可，你来重试。"
+        )
+
+
+def _safe_remove(path: str):
+    """安全删除单个文件，忽略不存在的情况"""
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
 class VisualExtractor:
-    def __init__(self, bvid: str, interval: int = 10):
+    # yt-dlp 网络超时（秒），防止 B 站风控导致无限挂起
+    SOCKET_TIMEOUT = 30
+    # yt-dlp 最大重试次数
+    MAX_RETRIES = 3
+    # ffmpeg 子进程超时（秒），防止抽帧僵死
+    FFMPEG_TIMEOUT = 300
+
+    def __init__(self, bvid: str, interval: int = 10, quality: str = "480p"):
         self.bvid = bvid
         self.interval = interval
+        self.quality = quality
 
     @staticmethod
     def _parse_time(time_str: str) -> float:
-        """解析 HH:MM:SS 或 MM:SS 格式为秒数"""
         parts = time_str.split(':')
         seconds = 0.0
         for part in parts:
             seconds = seconds * 60 + float(part)
         return seconds
 
+    def _get_height_limit(self) -> int:
+        mapping = {"360p": 360, "480p": 480, "720p": 720, "1080p": 1080}
+        return mapping.get(self.quality, 480)
+
     def _make_base_opts(self):
+        h = self._get_height_limit()
         return {
             'quiet': True,
             'no_warnings': True,
-            # 只下载视频流，不需要音频，也就不需要 ffmpeg 合并
-            'format': 'bestvideo[height<=720][ext=mp4]/bestvideo[height<=720]/bestvideo',
+            'socket_timeout': self.SOCKET_TIMEOUT,
+            'retries': self.MAX_RETRIES,
+            'format': f'bestvideo[height<={h}][ext=mp4]/bestvideo[height<={h}]/bestvideo',
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                 'Referer': 'https://www.bilibili.com/'
             }
         }
 
-    def download_video(self, output_dir: str = None, start_time: str = None, end_time: str = None) -> str:
+    def download_video(self, output_dir: str, start_time: str = None, end_time: str = None) -> str:
         """
-        使用 yt-dlp 下载视频流（仅视频，无音频），分辨率不高于 720p。
-        支持 start_time/end_time 进行切片。
-        策略：先尝试 yt-dlp 原生切片 -> 下载完整后 ffmpeg 裁剪 -> 兜底用完整文件
+        yt-dlp download with timeout and cleanup.
+        output_dir is mandatory - never falls back to system temp.
         """
-        if output_dir is None:
-            output_dir = tempfile.gettempdir()
-
+        _check_ffmpeg()
         os.makedirs(output_dir, exist_ok=True)
 
         if start_time and end_time:
@@ -50,48 +90,64 @@ class VisualExtractor:
 
         output_path = os.path.join(output_dir, filename)
         url = f"https://www.bilibili.com/video/{self.bvid}"
+        full_tmp_path = None
 
-        if start_time and end_time:
-            # 策略一：尝试 yt-dlp 原生切片
-            try:
+        try:
+            if start_time and end_time:
+                # S1: yt-dlp native range
+                try:
+                    opts = {**self._make_base_opts(), 'outtmpl': output_path}
+                    opts['download_ranges'] = yt_dlp.utils.download_range_func(
+                        None,
+                        [(yt_dlp.utils.parse_duration(start_time), yt_dlp.utils.parse_duration(end_time))]
+                    )
+                    opts['force_keyframes_at_cuts'] = True
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        ydl.download([url])
+                    return output_path
+                except Exception:
+                    _safe_remove(output_path)
+                    print("[i] yt-dlp native range failed, fallback to full download + trim...")
+
+                # S2: full download then ffmpeg trim
+                full_tmp_path = os.path.join(output_dir, f"{self.bvid}_full_tmp.mp4")
+                opts = {**self._make_base_opts(), 'outtmpl': full_tmp_path}
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    ydl.download([url])
+
+                try:
+                    self._trim_with_ffmpeg(full_tmp_path, output_path, start_time, end_time)
+                    _safe_remove(full_tmp_path)
+                except Exception:
+                    print("[i] ffmpeg trim failed, using full file")
+                    if os.path.exists(full_tmp_path):
+                        os.rename(full_tmp_path, output_path)
+
+                return output_path
+            else:
                 opts = {**self._make_base_opts(), 'outtmpl': output_path}
-                opts['download_ranges'] = yt_dlp.utils.download_range_func(
-                    None,
-                    [(yt_dlp.utils.parse_duration(start_time), yt_dlp.utils.parse_duration(end_time))]
-                )
-                opts['force_keyframes_at_cuts'] = True
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.download([url])
                 return output_path
-            except Exception:
-                print("[i] yt-dlp 原生切片失败，回退为下载后裁剪...")
 
-            # 策略二：下载完整视频流，再用 ffmpeg 裁剪
-            full_path = os.path.join(output_dir, f"{self.bvid}_full_tmp.mp4")
-            opts = {**self._make_base_opts(), 'outtmpl': full_path}
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
+        except yt_dlp.utils.DownloadError as e:
+            # cleanup on failure
+            _safe_remove(output_path)
+            _safe_remove(full_tmp_path)
+            err_str = str(e).lower()
+            if "timed out" in err_str or "timeout" in err_str:
+                raise DownloadTimeoutError(
+                    "[B2A 下载超时] 视频下载因网络超时被强制中止，已自动清理残留文件。"
+                    "可能原因：B站风控拦截了无Cookie的请求，或当前网络不稳定。"
+                    "请告知用户检查网络后重试，不会浪费任何磁盘空间。"
+                ) from e
+            raise
+        except Exception:
+            _safe_remove(output_path)
+            _safe_remove(full_tmp_path)
+            raise
 
-            try:
-                self._trim_with_ffmpeg(full_path, output_path, start_time, end_time)
-                try:
-                    os.remove(full_path)
-                except OSError:
-                    pass
-            except Exception:
-                print("[i] ffmpeg 裁剪失败，使用完整文件")
-                os.rename(full_path, output_path)
-
-            return output_path
-        else:
-            opts = {**self._make_base_opts(), 'outtmpl': output_path}
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
-            return output_path
-
-    @staticmethod
-    def _trim_with_ffmpeg(input_path: str, output_path: str, start_time: str, end_time: str):
-        """用 ffmpeg -ss/-to 裁剪视频片段"""
+    def _trim_with_ffmpeg(self, input_path: str, output_path: str, start_time: str, end_time: str):
         cmd = [
             'ffmpeg', '-y',
             '-ss', start_time,
@@ -100,16 +156,17 @@ class VisualExtractor:
             '-c', 'copy',
             output_path
         ]
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        subprocess.run(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=True, timeout=self.FFMPEG_TIMEOUT
+        )
 
-    def extract_frames(self, video_path: str, output_dir: str = None) -> list[str]:
+    def extract_frames(self, video_path: str, output_dir: str) -> list[str]:
         """
-        使用 ffmpeg 命令行按固定间隔抽取关键帧。
-        返回生成的帧图片路径列表。
+        ffmpeg frame extraction with timeout.
+        output_dir is mandatory - never falls back to system temp.
         """
-        if output_dir is None:
-            output_dir = tempfile.gettempdir()
-
+        _check_ffmpeg()
         os.makedirs(output_dir, exist_ok=True)
 
         output_pattern = os.path.join(output_dir, f"{self.bvid}_frame_%04d.jpg")
@@ -122,7 +179,10 @@ class VisualExtractor:
             output_pattern
         ]
 
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        subprocess.run(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=True, timeout=self.FFMPEG_TIMEOUT
+        )
 
         frames = sorted([
             os.path.join(output_dir, f)
