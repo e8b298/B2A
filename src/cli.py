@@ -233,6 +233,8 @@ async def async_main():
 
 
 def main():
+    import os
+    os.environ["B2A_LOG_STDERR"] = "1"
     try:
         asyncio.run(async_main())
     except KeyboardInterrupt:

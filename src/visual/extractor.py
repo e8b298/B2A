@@ -3,6 +3,10 @@ import shutil
 import subprocess
 import yt_dlp
 
+from src.utils.logger import get_logger
+
+logger = get_logger()
+
 
 class FFmpegNotFoundError(Exception):
     pass
@@ -32,6 +36,13 @@ def _safe_remove(path: str):
             os.remove(path)
     except OSError:
         pass
+
+
+class _YtdlpNullLogger:
+    """Suppress all yt-dlp output to prevent stdout pollution in MCP mode."""
+    def debug(self, msg): pass
+    def warning(self, msg): pass
+    def error(self, msg): pass
 
 
 class VisualExtractor:
@@ -65,6 +76,8 @@ class VisualExtractor:
         return {
             'quiet': True,
             'no_warnings': True,
+            'noprogress': True,
+            'logger': _YtdlpNullLogger(),
             'socket_timeout': self.SOCKET_TIMEOUT,
             'retries': self.MAX_RETRIES,
             'progress_hooks': [download_timeout_hook],
@@ -115,7 +128,7 @@ class VisualExtractor:
                             "可能原因：B站风控拦截了无Cookie的请求，或当前网络过慢。"
                             "请告知用户检查网络后重试，不会浪费任何磁盘空间。"
                         ) from e
-                    print("[i] yt-dlp native range failed, fallback to full download + trim...")
+                    logger.info("yt-dlp native range failed, fallback to full download + trim...")
 
                 # S2: full download then ffmpeg trim
                 full_tmp_path = os.path.join(output_dir, f"{self.bvid}_full_tmp.mp4")
@@ -127,7 +140,7 @@ class VisualExtractor:
                     self._trim_with_ffmpeg(full_tmp_path, output_path, start_time, end_time)
                     _safe_remove(full_tmp_path)
                 except Exception:
-                    print("[i] ffmpeg trim failed, using full file")
+                    logger.info("ffmpeg trim failed, using full file")
                     if os.path.exists(full_tmp_path):
                         os.rename(full_tmp_path, output_path)
 
@@ -140,6 +153,7 @@ class VisualExtractor:
 
         except yt_dlp.utils.DownloadError as e:
             # cleanup on failure
+            logger.warning("video download failed (DownloadError): %s", e)
             _safe_remove(output_path)
             _safe_remove(full_tmp_path)
             err_str = str(e).lower()

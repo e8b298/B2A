@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.5.7 (2026-03-04)
+
+### 重大修复：MCP 工具卡死问题彻底解决
+
+此版本彻底修复了 MCP 模式下所有耗时工具（语音识别、全景故事板、下钻特写）在 Claude Code 等客户端中调用时无限卡死的问题。
+
+- **子进程隔离架构**：将 yt-dlp/ffmpeg 操作从 MCP 进程内迁移到独立子进程（`subprocess_worker.py`）中执行，通过 `stdin=subprocess.DEVNULL` 彻底隔离 MCP 的 JSON-RPC 管道，消除 stdin 继承导致的挂起。
+- **yt-dlp stdout 污染修复**：即使设置 `quiet=True`，yt-dlp 仍会向 stdout 写入下载进度信息，污染 MCP 协议通道。新增 `noprogress: True` 和 `_YtdlpNullLogger` 彻底静默所有输出。
+- **全同步 API 层**：为 `api.py` 和 `url_parser.py` 新增同步版本函数（`*_sync`），避免 async httpx 与 FastMCP 的 anyio 事件循环冲突。
+- **文件日志系统**：新增 `src/utils/logger.py`，所有调试输出从 `print()` 改为写入 `~/.b2a/b2a.log`，MCP 模式下不再碰 stdout/stderr。
+- **总体超时兜底**：三个耗时工具分别加入 `move_on_after` 超时保护（语音/故事板 5 分钟，下钻 3 分钟），超时后返回友好错误信息而非无限等待。
+- **transcript 截断保护**：ASR 结果超过 8000 字符时自动截断，防止 MCP stdio 管道缓冲区溢出卡死事件循环。
+
+### 代码清理
+
+- 移除未使用的 `List` 类型导入。
+- 删除调试用的 `bilibili_debug_ping`、`bilibili_debug_thread_sync`、`bilibili_debug_download` 工具。
+
 ## v0.5.6 (2026-03-04)
 
 ### 修复与文档

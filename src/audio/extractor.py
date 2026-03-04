@@ -3,7 +3,10 @@ import shutil
 import subprocess
 import yt_dlp
 
-from src.visual.extractor import FFmpegNotFoundError, DownloadTimeoutError, _check_ffmpeg, _safe_remove
+from src.visual.extractor import FFmpegNotFoundError, DownloadTimeoutError, _check_ffmpeg, _safe_remove, _YtdlpNullLogger
+from src.utils.logger import get_logger
+
+logger = get_logger()
 
 
 class AudioExtractor:
@@ -28,6 +31,8 @@ class AudioExtractor:
         return {
             'quiet': True,
             'no_warnings': True,
+            'noprogress': True,
+            'logger': _YtdlpNullLogger(),
             'socket_timeout': self.SOCKET_TIMEOUT,
             'progress_hooks': [download_timeout_hook],
             'retries': self.MAX_RETRIES,
@@ -58,6 +63,7 @@ class AudioExtractor:
                         "可能原因：B站风控拦截了无Cookie的请求，或当前网络过慢。"
                         "请告知用户检查网络后重试，不会浪费任何磁盘空间。"
                     ) from e
+                logger.warning("audio download failed (fmt=%s): %s", fmt, e)
                 last_err = e
                 _safe_remove(output_path)
                 continue
@@ -69,7 +75,7 @@ class AudioExtractor:
                 "可能原因：B站风控拦截了无Cookie的请求，或当前网络不稳定。"
                 "请告知用户检查网络后重试，不会浪费任何磁盘空间。"
             ) from last_err
-        raise RuntimeError(f"无法下载音频: {self.bvid}") from last_err
+        raise RuntimeError(f"无法下载音频: {self.bvid} (原因: {last_err})") from last_err
 
     def download_audio(self, output_dir: str, start_time: str = None, end_time: str = None) -> str:
         """
@@ -109,7 +115,7 @@ class AudioExtractor:
                     return output_path
                 except Exception:
                     _safe_remove(output_path)
-                    print("[i] yt-dlp native range failed, fallback to full download + trim...")
+                    logger.info("yt-dlp native range failed, fallback to full download + trim...")
 
                 # S2: full download then ffmpeg trim
                 full_tmp_path = os.path.abspath(os.path.join(output_dir, f"{self.bvid}_full_tmp.m4a"))
@@ -119,7 +125,7 @@ class AudioExtractor:
                     self._trim_with_ffmpeg(full_tmp_path, output_path, start_time, end_time)
                     _safe_remove(full_tmp_path)
                 except Exception:
-                    print("[i] ffmpeg trim failed, using full file")
+                    logger.info("ffmpeg trim failed, using full file")
                     if os.path.exists(full_tmp_path):
                         os.rename(full_tmp_path, output_path)
 

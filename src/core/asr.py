@@ -4,6 +4,9 @@ import subprocess
 import uuid
 import httpx
 from src.utils.config import load_volc_config
+from src.utils.logger import get_logger
+
+logger = get_logger()
 
 # 单次 ASR 请求的最大音频时长（秒）。超过此值将自动分片。
 MAX_CHUNK_DURATION = 60
@@ -69,59 +72,54 @@ class VolcengineASRClient:
         ])
         return chunks
 
-    async def transcribe_audio(self, audio_path: str, start_offset: str = None) -> str:
+    def transcribe_audio_sync(self, audio_path: str, start_offset: str = None) -> str:
         """
-        调用豆包语音 BigModel Flash API 进行语音识别。
-        - 自动检测音频时长，超过阈值则分片处理
-        - start_offset: 切片起始时间，用于修正为视频绝对时间戳
+        同步版本的语音识别入口。
+        在 MCP 模式下通过 anyio.to_thread.run_sync 调用，
+        避免 async httpx 与 anyio 事件循环冲突导致 stdout 写入卡死。
         """
         self._load_credentials()
-        print(f"[i] 当前环境: {self.env_label}")
+        logger.info("当前环境: %s", self.env_label)
 
         offset_ms = 0
         if start_offset:
             offset_ms = int(self._parse_time(start_offset) * 1000)
-            print(f"[i] 时间戳偏移: +{start_offset} ({offset_ms}ms)")
+            logger.info("时间戳偏移: +%s (%dms)", start_offset, offset_ms)
 
-        # 检测音频时长，决定是否需要分片
-        duration = self._get_audio_duration(audio_path)
-        if duration > MAX_CHUNK_DURATION:
-            print(f"[i] 音频时长 {duration:.0f}s 超过 {MAX_CHUNK_DURATION}s，启动自动分片...")
-            return await self._transcribe_chunked(audio_path, offset_ms)
-        else:
-            return await self._transcribe_single(audio_path, offset_ms)
+        with httpx.Client(timeout=120.0) as client:
+            duration = self._get_audio_duration(audio_path)
+            if duration > MAX_CHUNK_DURATION:
+                logger.info("音频时长 %.0fs 超过 %ds，启动自动分片...", duration, MAX_CHUNK_DURATION)
+                return self._transcribe_chunked_sync(client, audio_path, offset_ms)
+            else:
+                return self._transcribe_single_sync(client, audio_path, offset_ms)
 
-    async def _transcribe_single(self, audio_path: str, offset_ms: int = 0) -> str:
-        """单次提交一个音频文件进行 ASR"""
+    def _transcribe_single_sync(self, client: httpx.Client, audio_path: str, offset_ms: int = 0) -> str:
         with open(audio_path, 'rb') as f:
             audio_data = f.read()
-
         encoded_audio = base64.b64encode(audio_data).decode('utf-8')
-        return await self._call_asr_api(encoded_audio, audio_path, offset_ms)
+        return self._call_asr_api_sync(client, encoded_audio, audio_path, offset_ms)
 
-    async def _transcribe_chunked(self, audio_path: str, offset_ms: int = 0) -> str:
-        """将长音频分片后逐段提交 ASR，拼合结果"""
+    def _transcribe_chunked_sync(self, client: httpx.Client, audio_path: str, offset_ms: int = 0) -> str:
         chunks = self._split_audio(audio_path)
-        print(f"[i] 已切割为 {len(chunks)} 个片段")
+        logger.info("已切割为 %d 个片段", len(chunks))
 
         all_lines = []
         chunk_offset_ms = offset_ms
 
         for i, chunk_path in enumerate(chunks):
-            print(f"[*] 正在识别第 {i + 1}/{len(chunks)} 段...")
+            logger.info("正在识别第 %d/%d 段...", i + 1, len(chunks))
             with open(chunk_path, 'rb') as f:
                 audio_data = f.read()
             encoded_audio = base64.b64encode(audio_data).decode('utf-8')
-            result = await self._call_asr_api(encoded_audio, chunk_path, chunk_offset_ms)
+            result = self._call_asr_api_sync(client, encoded_audio, chunk_path, chunk_offset_ms)
 
             if result and not result.startswith("[ASR"):
                 all_lines.append(result)
 
-            # 下一段的偏移 = 当前偏移 + 当前片段实际时长
             chunk_duration = self._get_audio_duration(chunk_path)
             chunk_offset_ms += int(chunk_duration * 1000)
 
-            # 清理临时分片文件
             try:
                 os.remove(chunk_path)
             except OSError:
@@ -131,8 +129,8 @@ class VolcengineASRClient:
             return "\n".join(all_lines)
         return "[ASR 未识别到人声内容。这段音频可能是纯音乐、环境音或无对白片段。]"
 
-    async def _call_asr_api(self, encoded_audio: str, audio_path: str, offset_ms: int) -> str:
-        """向火山引擎发送单次 ASR 请求"""
+    def _call_asr_api_sync(self, client: httpx.Client, encoded_audio: str, audio_path: str, offset_ms: int) -> str:
+        """同步版 ASR 请求"""
         req_id = str(uuid.uuid4())
 
         fmt = "m4a"
@@ -172,34 +170,149 @@ class VolcengineASRClient:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with httpx.AsyncClient(timeout=120.0) as client:
-                    response = await client.post(self.url, headers=headers, json=payload)
+                response = client.post(self.url, headers=headers, json=payload)
 
                 if response.status_code != 200:
-                    print(f"[!] ASR 请求失败 (HTTP {response.status_code}): {response.text[:200]}")
+                    logger.warning("ASR 请求失败 (HTTP %d): %s", response.status_code, response.text[:200])
                     if attempt < max_retries - 1:
                         continue
                     return f"[ASR 错误 {response.status_code}]"
 
                 resp_json = response.json()
 
-                # 区分"API 正常返回但无人声"和"API 异常需重试"
                 if resp_json.get("code", -1) == 0 or "result" in resp_json:
-                    # API 正常响应，提取结果
                     result = self._extract_result(resp_json, offset_ms)
                     if result:
                         return result
-                    # API 正常但无内容 = 纯音乐/无人声，不需要重试
                     return ""
 
-                # API 返回了异常 code，值得重试
-                print(f"[!] ASR 第 {attempt+1} 次尝试返回异常 code: {resp_json.get('code')}")
+                logger.warning("ASR 第 %d 次尝试返回异常 code: %s", attempt+1, resp_json.get('code'))
                 if attempt < max_retries - 1:
                     continue
                 return "[ASR 未识别到人声内容。这段音频可能是纯音乐、环境音或无对白片段。]"
 
             except Exception as e:
-                print(f"[!] ASR 异常 (第 {attempt+1} 次): {e}")
+                logger.warning("ASR 异常 (第 %d 次): %s", attempt+1, e)
+                if attempt < max_retries - 1:
+                    continue
+                return f"[ASR 异常: {e}]"
+
+        return "[ASR 失败: 超过最大重试次数]"
+
+    # === async 版本保留给 CLI 使用 ===
+
+    async def transcribe_audio(self, audio_path: str, start_offset: str = None) -> str:
+        """
+        异步版本，仅供 CLI 模式使用。MCP 模式请用 transcribe_audio_sync。
+        """
+        self._load_credentials()
+        logger.info("当前环境: %s", self.env_label)
+
+        offset_ms = 0
+        if start_offset:
+            offset_ms = int(self._parse_time(start_offset) * 1000)
+            logger.info("时间戳偏移: +%s (%dms)", start_offset, offset_ms)
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            duration = self._get_audio_duration(audio_path)
+            if duration > MAX_CHUNK_DURATION:
+                logger.info("音频时长 %.0fs 超过 %ds，启动自动分片...", duration, MAX_CHUNK_DURATION)
+                return await self._transcribe_chunked_async(client, audio_path, offset_ms)
+            else:
+                return await self._transcribe_single_async(client, audio_path, offset_ms)
+
+    async def _transcribe_single_async(self, client: httpx.AsyncClient, audio_path: str, offset_ms: int = 0) -> str:
+        with open(audio_path, 'rb') as f:
+            audio_data = f.read()
+        encoded_audio = base64.b64encode(audio_data).decode('utf-8')
+        return await self._call_asr_api_async(client, encoded_audio, audio_path, offset_ms)
+
+    async def _transcribe_chunked_async(self, client: httpx.AsyncClient, audio_path: str, offset_ms: int = 0) -> str:
+        chunks = self._split_audio(audio_path)
+        logger.info("已切割为 %d 个片段", len(chunks))
+
+        all_lines = []
+        chunk_offset_ms = offset_ms
+
+        for i, chunk_path in enumerate(chunks):
+            logger.info("正在识别第 %d/%d 段...", i + 1, len(chunks))
+            with open(chunk_path, 'rb') as f:
+                audio_data = f.read()
+            encoded_audio = base64.b64encode(audio_data).decode('utf-8')
+            result = await self._call_asr_api_async(client, encoded_audio, chunk_path, chunk_offset_ms)
+
+            if result and not result.startswith("[ASR"):
+                all_lines.append(result)
+
+            chunk_duration = self._get_audio_duration(chunk_path)
+            chunk_offset_ms += int(chunk_duration * 1000)
+
+            try:
+                os.remove(chunk_path)
+            except OSError:
+                pass
+
+        if all_lines:
+            return "\n".join(all_lines)
+        return "[ASR 未识别到人声内容。这段音频可能是纯音乐、环境音或无对白片段。]"
+
+    async def _call_asr_api_async(self, client: httpx.AsyncClient, encoded_audio: str, audio_path: str, offset_ms: int) -> str:
+        req_id = str(uuid.uuid4())
+
+        fmt = "m4a"
+        if audio_path.endswith(".mp3"):
+            fmt = "mp3"
+        elif audio_path.endswith(".wav"):
+            fmt = "wav"
+
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": self.api_key,
+            "X-Api-Resource-Id": "volc.seedasr.auc",
+            "X-Api-Request-Id": req_id,
+            "X-Api-Sequence": "-1"
+        }
+
+        payload = {
+            "user": {"uid": "b2a_agent"},
+            "audio": {
+                "format": fmt, "codec": "raw",
+                "rate": 16000, "bits": 16, "channel": 1,
+                "data": encoded_audio
+            },
+            "request": {
+                "model_name": "bigmodel",
+                "enable_itn": True, "enable_punc": True,
+                "show_utterances": True
+            }
+        }
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = await client.post(self.url, headers=headers, json=payload)
+
+                if response.status_code != 200:
+                    logger.warning("ASR 请求失败 (HTTP %d): %s", response.status_code, response.text[:200])
+                    if attempt < max_retries - 1:
+                        continue
+                    return f"[ASR 错误 {response.status_code}]"
+
+                resp_json = response.json()
+
+                if resp_json.get("code", -1) == 0 or "result" in resp_json:
+                    result = self._extract_result(resp_json, offset_ms)
+                    if result:
+                        return result
+                    return ""
+
+                logger.warning("ASR 第 %d 次尝试返回异常 code: %s", attempt+1, resp_json.get('code'))
+                if attempt < max_retries - 1:
+                    continue
+                return "[ASR 未识别到人声内容。这段音频可能是纯音乐、环境音或无对白片段。]"
+
+            except Exception as e:
+                logger.warning("ASR 异常 (第 %d 次): %s", attempt+1, e)
                 if attempt < max_retries - 1:
                     continue
                 return f"[ASR 异常: {e}]"

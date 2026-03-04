@@ -1,18 +1,61 @@
-import asyncio
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from mcp.server.fastmcp import FastMCP
 import os
+import sys
+import json
+import subprocess
 import shutil
 
-from src.core.api import get_video_info, get_video_subtitles, get_page_list, get_cid_by_page
-from src.utils.url_parser import parse_video_url
+import anyio
+from anyio import move_on_after
+
+from src.core.api import get_video_info_sync, get_video_subtitles_sync, get_page_list_sync, get_cid_by_page_sync
+from src.utils.url_parser import parse_video_url_sync
 from src.utils.workspace import setup_workspace
 from src.core.asr import VolcengineASRClient
-from src.audio.extractor import AudioExtractor
-from src.visual.extractor import VisualExtractor
+from src.utils.logger import get_logger
+
+logger = get_logger()
 
 # 初始化 FastMCP 服务器
 mcp = FastMCP("B2A-Agent-Vision")
+
+# MCP stdio 管道在 Windows 上缓冲区有限，返回数据过大会卡死事件循环。
+# 对所有文本类返回值做截断保护。
+MAX_TRANSCRIPT_CHARS = 8000
+
+
+def _run_worker(command: str, args: dict, timeout: int = 300) -> dict:
+    """Run a yt-dlp/ffmpeg operation in a separate subprocess to avoid
+    stdin/stdout interference with MCP's JSON-RPC protocol."""
+    worker = os.path.join(os.path.dirname(__file__), "utils", "subprocess_worker.py")
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cmd = [sys.executable, worker, command, json.dumps(args, ensure_ascii=False)]
+    logger.info("_run_worker: cmd=%s, cwd=%s", command, project_root)
+    logger.info("_run_worker: worker exists=%s", os.path.exists(worker))
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+            cwd=project_root, stdin=subprocess.DEVNULL
+        )
+        logger.info("_run_worker: rc=%d, stdout_len=%d, stderr_len=%d",
+                     result.returncode, len(result.stdout), len(result.stderr))
+        if result.stderr:
+            logger.info("_run_worker: stderr=%s", result.stderr[:300])
+        if result.returncode != 0:
+            stderr_msg = result.stderr.strip()[:300] if result.stderr else ""
+            stdout_msg = result.stdout.strip()[:300] if result.stdout else ""
+            try:
+                return json.loads(stdout_msg)
+            except Exception:
+                raise RuntimeError(f"Worker failed (rc={result.returncode}): {stderr_msg or stdout_msg}")
+        return json.loads(result.stdout)
+    except subprocess.TimeoutExpired:
+        logger.error("_run_worker: TIMED OUT after %ds", timeout)
+        raise RuntimeError(f"Worker timed out after {timeout}s")
+    except json.JSONDecodeError:
+        logger.error("_run_worker: invalid JSON: %s", result.stdout[:200])
+        raise RuntimeError(f"Worker returned invalid JSON: {result.stdout[:200]}")
 
 def _format_timestamp(seconds: float) -> str:
     total = int(seconds)
@@ -32,25 +75,31 @@ async def bilibili_get_info_subtitles(url: str, page: Optional[int] = None) -> D
         page: Optional part number (for multi-part videos, 1-indexed)
     """
     try:
-        parsed = await parse_video_url(url)
-        bvid = parsed.bvid
-        target_page = page or parsed.page
+        def _sync_work():
+            parsed = parse_video_url_sync(url)
+            bvid = parsed.bvid
+            target_page = page or parsed.page
 
-        info = await get_video_info(bvid)
+            info = get_video_info_sync(bvid)
 
-        cid = None
-        pages = await get_page_list(bvid)
-        if len(pages) > 1:
-            cid_result = await get_cid_by_page(bvid, target_page)
-            if cid_result:
-                cid = cid_result
-            else:
+            cid = None
+            tp = target_page
+            pages = get_page_list_sync(bvid)
+            if len(pages) > 1:
+                cid_result = get_cid_by_page_sync(bvid, tp)
+                if cid_result:
+                    cid = cid_result
+                else:
+                    cid = pages[0]["cid"]
+                    tp = 1
+            elif pages:
                 cid = pages[0]["cid"]
-                target_page = 1
-        elif pages:
-            cid = pages[0]["cid"]
 
-        subtitles = await get_video_subtitles(bvid, cid=cid)
+            subtitles = get_video_subtitles_sync(bvid, cid=cid)
+            return bvid, info, subtitles, tp
+
+        bvid, info, subtitles, target_page = await anyio.to_thread.run_sync(_sync_work)
+
         formatted_subs = []
         for item in subtitles:
             ts = _format_timestamp(item["from"])
@@ -89,38 +138,71 @@ async def bilibili_extract_voice(url: str, start_time: Optional[str] = None, end
         from src.utils.config import load_volc_config
         load_volc_config()
 
-        parsed = await parse_video_url(url)
-        bvid = parsed.bvid
+        async def _do_extract_voice():
+            def _sync_work():
+                parsed = parse_video_url_sync(url)
+                bvid = parsed.bvid
+                target_start = start_time or parsed.time_start
 
-        target_start = start_time or parsed.time_start
+                dirs = setup_workspace(bvid=bvid)
+                # yt-dlp in subprocess to avoid MCP stdout corruption
+                dl_result = _run_worker("download_audio", {
+                    "bvid": bvid,
+                    "output_dir": dirs["audios"],
+                    "start_time": target_start,
+                    "end_time": end_time,
+                }, timeout=300)
+                if "error" in dl_result:
+                    raise RuntimeError(dl_result["error"])
+                audio_path = dl_result["audio_path"]
 
-        dirs = setup_workspace(bvid=bvid)
+                asr_client = VolcengineASRClient()
+                text = asr_client.transcribe_audio_sync(
+                    audio_path,
+                    start_offset=target_start
+                )
+                return bvid, audio_path, text
 
-        asr_client = VolcengineASRClient()
-        audio_extractor = AudioExtractor(bvid)
+            return await anyio.to_thread.run_sync(_sync_work)
 
-        audio_path = await asyncio.to_thread(
-            audio_extractor.download_audio,
-            dirs["audios"],
-            start_time=target_start,
-            end_time=end_time
-        )
+        logger.info("bilibili_extract_voice started (timeout=300s)")
 
-        text = await asr_client.transcribe_audio(
-            audio_path,
-            start_offset=target_start
-        )
+        result_holder = [None]
+        timed_out = False
+        with move_on_after(300) as cancel_scope:
+            result_holder[0] = await _do_extract_voice()
+        if cancel_scope.cancelled_caught:
+            timed_out = True
+
+        if timed_out:
+            logger.error("bilibili_extract_voice timed out after 300s")
+            return {"error": "[B2A 超时] 整个流程超过 5 分钟未完成，已自动中止。可能原因：网络过慢或B站限流。请告知用户稍后重试。"}
+
+        bvid, audio_path, text = result_holder[0]
+        logger.info("bilibili_extract_voice finished")
 
         # 无人声时给 AI 明确的引导，而不是返回空字符串
         if not text or not text.strip():
             text = "[ASR 未识别到人声内容。这段音频可能是纯音乐、环境音或无对白片段，请据此回复用户。]"
 
-        return {
+        truncated = False
+        if len(text) > MAX_TRANSCRIPT_CHARS:
+            logger.warning("transcript too long (%d chars), truncating to %d", len(text), MAX_TRANSCRIPT_CHARS)
+            # 完整结果写入日志文件，防止丢数据
+            logger.info("=== FULL TRANSCRIPT START ===\n%s\n=== FULL TRANSCRIPT END ===", text)
+            text = text[:MAX_TRANSCRIPT_CHARS] + f"\n\n[... 已截断，完整内容共 {len(text)} 字符，详见 ~/.b2a/b2a.log]"
+            truncated = True
+
+        result = {
             "bvid": bvid,
             "asr_transcript": text,
             "audio_file_saved_at": audio_path,
             "note": "Timestamps are included in the transcript. PLEASE call bilibili_cleanup_cache when you are done with this task!"
         }
+        if truncated:
+            result["truncated"] = True
+        logger.info("bilibili_extract_voice returning (transcript_len=%d, truncated=%s)", len(text), truncated)
+        return result
     except Exception as e:
         return {"error": str(e)}
 
@@ -141,15 +223,48 @@ async def bilibili_gen_storyboard(url: str, video_duration_seconds: int) -> Dict
         video_duration_seconds: The total duration in seconds (get this from bilibili_get_info_subtitles first).
     """
     try:
-        parsed = await parse_video_url(url)
-        bvid = parsed.bvid
-        dirs = setup_workspace(bvid=bvid)
-
         interval = max(int(video_duration_seconds / 30), 2)
 
-        extractor = VisualExtractor(bvid, interval=interval, quality="360p")
-        video_path = await asyncio.to_thread(extractor.download_video, dirs["downloads"])
-        frames = await asyncio.to_thread(extractor.extract_frames, video_path, output_dir=dirs["frames"])
+        async def _do_gen_storyboard():
+            def _sync_work():
+                parsed = parse_video_url_sync(url)
+                bvid = parsed.bvid
+                dirs = setup_workspace(bvid=bvid)
+                # yt-dlp + ffmpeg in subprocess
+                dl_result = _run_worker("download_video", {
+                    "bvid": bvid,
+                    "output_dir": dirs["downloads"],
+                    "interval": interval,
+                    "quality": "360p",
+                }, timeout=300)
+                if "error" in dl_result:
+                    raise RuntimeError(dl_result["error"])
+                video_path = dl_result["video_path"]
+
+                fr_result = _run_worker("extract_frames", {
+                    "bvid": bvid,
+                    "video_path": video_path,
+                    "output_dir": dirs["frames"],
+                    "interval": interval,
+                    "quality": "360p",
+                }, timeout=300)
+                if "error" in fr_result:
+                    raise RuntimeError(fr_result["error"])
+                return bvid, fr_result["frames"]
+            return await anyio.to_thread.run_sync(_sync_work)
+
+        logger.info("bilibili_gen_storyboard started (timeout=300s)")
+
+        result_holder = [None]
+        with move_on_after(300) as cancel_scope:
+            result_holder[0] = await _do_gen_storyboard()
+
+        if cancel_scope.cancelled_caught:
+            logger.error("bilibili_gen_storyboard timed out after 300s")
+            return {"error": "[B2A 超时] 整个流程超过 5 分钟未完成，已自动中止。可能原因：网络过慢或B站限流。请告知用户稍后重试。"}
+
+        bvid, frames = result_holder[0]
+        logger.info("bilibili_gen_storyboard finished")
 
         return {
             "bvid": bvid,
@@ -177,15 +292,48 @@ async def bilibili_drilldown_frames(url: str, start_time: str, end_time: str, qu
         interval_seconds: Extract a frame every X seconds (default: 5).
     """
     try:
-        parsed = await parse_video_url(url)
-        bvid = parsed.bvid
-        dirs = setup_workspace(bvid=bvid)
+        async def _do_drilldown():
+            def _sync_work():
+                parsed = parse_video_url_sync(url)
+                bvid = parsed.bvid
+                dirs = setup_workspace(bvid=bvid)
+                # yt-dlp + ffmpeg in subprocess
+                dl_result = _run_worker("download_video", {
+                    "bvid": bvid,
+                    "output_dir": dirs["downloads"],
+                    "interval": interval_seconds,
+                    "quality": quality,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                }, timeout=180)
+                if "error" in dl_result:
+                    raise RuntimeError(dl_result["error"])
+                video_path = dl_result["video_path"]
 
-        extractor = VisualExtractor(bvid, interval=interval_seconds, quality=quality)
-        video_path = await asyncio.to_thread(
-            extractor.download_video, dirs["downloads"], start_time=start_time, end_time=end_time
-        )
-        frames = await asyncio.to_thread(extractor.extract_frames, video_path, output_dir=dirs["frames"])
+                fr_result = _run_worker("extract_frames", {
+                    "bvid": bvid,
+                    "video_path": video_path,
+                    "output_dir": dirs["frames"],
+                    "interval": interval_seconds,
+                    "quality": quality,
+                }, timeout=180)
+                if "error" in fr_result:
+                    raise RuntimeError(fr_result["error"])
+                return bvid, fr_result["frames"]
+            return await anyio.to_thread.run_sync(_sync_work)
+
+        logger.info("bilibili_drilldown_frames started (timeout=180s)")
+
+        result_holder = [None]
+        with move_on_after(180) as cancel_scope:
+            result_holder[0] = await _do_drilldown()
+
+        if cancel_scope.cancelled_caught:
+            logger.error("bilibili_drilldown_frames timed out after 180s")
+            return {"error": "[B2A 超时] 整个流程超过 3 分钟未完成，已自动中止。可能原因：网络过慢或B站限流。请告知用户稍后重试。"}
+
+        bvid, frames = result_holder[0]
+        logger.info("bilibili_drilldown_frames finished")
 
         return {
             "bvid": bvid,
