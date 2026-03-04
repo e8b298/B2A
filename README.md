@@ -2,7 +2,7 @@
 
 让 AI Agent（Claude Code、Codex、Cursor、Antigravity、Windsurf 等）模拟“观看”Bililbili视频能力的多模态 MCP 插件。
 
-B2A 不是一个爬虫工具——它赋予 AI 真正理解视频内容的能力。AI 会像人一样先"读"字幕，看不懂就"看"画面，听不到就"听"声音，最终用自己的理解回答你的问题。
+B2A 不是一个爬虫工具——它赋予 AI 理解视频内容的能力。
 
 ## 它是怎么工作的
 
