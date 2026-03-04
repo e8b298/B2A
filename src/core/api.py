@@ -117,6 +117,50 @@ def get_video_subtitles_sync(bvid: str, cid: Optional[int] = None) -> list[dict]
         logger.warning("获取视频字幕时出现网络或解析异常: %s", e)
         return []
 
+
+def get_playurl_sync(bvid: str, cid: Optional[int] = None, video: bool = False) -> Optional[str]:
+    """Get audio (or video) stream URL via bilibili playurl API.
+    Fallback for when yt-dlp cannot parse formats.
+    Returns the direct download URL, or None on failure.
+    """
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            if not cid:
+                pages = get_page_list_sync(bvid)
+                if pages:
+                    cid = pages[0]["cid"]
+            if not cid:
+                return None
+
+            # fnval=16 requests DASH format
+            url = f"https://api.bilibili.com/x/player/playurl?bvid={bvid}&cid={cid}&qn=32&fnval=16"
+            res = client.get(url, headers=HEADERS)
+            res.raise_for_status()
+            data = res.json()
+            if data.get("code") != 0:
+                logger.warning("playurl API error: %s", data.get("message"))
+                return None
+
+            dash = data.get("data", {}).get("dash")
+            if not dash:
+                return None
+
+            if video:
+                streams = dash.get("video", [])
+            else:
+                streams = dash.get("audio", [])
+
+            if not streams:
+                return None
+
+            # Pick highest bandwidth stream
+            best = max(streams, key=lambda s: s.get("bandwidth", 0))
+            return best.get("baseUrl") or best.get("base_url")
+    except Exception as e:
+        logger.warning("playurl fallback failed: %s", e)
+        return None
+
+
 # === Async versions (for CLI mode) ===
 
 async def get_video_info(bvid: str) -> dict:

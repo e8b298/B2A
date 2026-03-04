@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.5.8 (2026-03-04)
+
+### yt-dlp 解析失败自动降级
+
+yt-dlp 对部分B站视频会出现 `No video formats found` 错误（yt-dlp 自身的兼容性问题，与登录无关）。此版本新增 playurl API 直连降级，用户零配置、零感知。
+
+- **playurl API 降级**：当 yt-dlp 无法解析视频格式时，自动通过B站 `playurl` API 获取 DASH 音频/视频流直链，用 httpx 流式下载。音频和视频下载均覆盖。
+- **`get_playurl_sync`**：`api.py` 新增函数，通过 playurl API 获取最高码率的音频或视频流地址。
+- **降级链完整**：yt-dlp native range → yt-dlp full download → playurl API 直连，三级降级确保最大兼容性。
+
+### AI 交互逻辑修正
+
+- **ASR 无人声后的行为修正**：ASR 未识别到人声时，AI 不再用视频简介假装了解了内容去总结，而是如实告知结果并主动表达想去看画面。
+- **主语逻辑修正**：AI 是"自己想看/需要看"视频来理解内容，不是"帮用户看"。提示语中新增正确/错误示范，杜绝"要不要帮你看看"这类措辞。
+
 ## v0.5.7 (2026-03-04)
 
 ### 重大修复：MCP 工具卡死问题彻底解决

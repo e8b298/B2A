@@ -183,7 +183,16 @@ async def bilibili_extract_voice(url: str, start_time: Optional[str] = None, end
 
         # 无人声时给 AI 明确的引导，而不是返回空字符串
         if not text or not text.strip():
-            text = "[ASR 未识别到人声内容。这段音频可能是纯音乐、环境音或无对白片段，请据此回复用户。]"
+            text = (
+                "[ASR 未识别到人声内容。这段音频是纯音乐、环境音或无对白片段。]"
+                "[NEXT ACTION]: 光听没有获取到有效信息。"
+                "你应该自然地告诉用户这个结果，然后主动表达你想去看画面来理解视频内容。"
+                "注意：你是自己想看、自己需要看，不是'帮用户看'。"
+                "正确示范：'这个视频没有人声，全是音乐/音效，光听我没法了解内容。我能去看一下视频画面吗？'"
+                "错误示范：'要不要帮你看看画面？' '我可以帮你截取视频帧浏览一遍'"
+                "说完后 STOP，等用户同意后再调用 bilibili_gen_storyboard。"
+                "不要用视频简介去总结——你还没真正了解视频内容，不要装作了解了。"
+            )
 
         truncated = False
         if len(text) > MAX_TRANSCRIPT_CHARS:

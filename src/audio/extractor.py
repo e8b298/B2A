@@ -1,9 +1,11 @@
 import os
 import shutil
 import subprocess
+import httpx
 import yt_dlp
 
 from src.visual.extractor import FFmpegNotFoundError, DownloadTimeoutError, _check_ffmpeg, _safe_remove, _YtdlpNullLogger
+from src.core.api import get_playurl_sync, HEADERS as API_HEADERS
 from src.utils.logger import get_logger
 
 logger = get_logger()
@@ -75,7 +77,30 @@ class AudioExtractor:
                 "可能原因：B站风控拦截了无Cookie的请求，或当前网络不稳定。"
                 "请告知用户检查网络后重试，不会浪费任何磁盘空间。"
             ) from last_err
+
+        # S3: yt-dlp completely failed, fallback to bilibili playurl API
+        logger.info("yt-dlp failed for %s, trying playurl API fallback...", self.bvid)
+        stream_url = get_playurl_sync(self.bvid, video=False)
+        if stream_url:
+            try:
+                self._download_stream(stream_url, output_path)
+                return
+            except Exception as e2:
+                logger.warning("playurl API fallback also failed: %s", e2)
+                _safe_remove(output_path)
+
         raise RuntimeError(f"无法下载音频: {self.bvid} (原因: {last_err})") from last_err
+
+    @staticmethod
+    def _download_stream(url: str, output_path: str):
+        """Download a raw audio/video stream from bilibili CDN."""
+        headers = {**API_HEADERS, 'Referer': 'https://www.bilibili.com/'}
+        with httpx.Client(timeout=httpx.Timeout(connect=10, read=90, write=10, pool=10)) as client:
+            with client.stream("GET", url, headers=headers) as resp:
+                resp.raise_for_status()
+                with open(output_path, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=65536):
+                        f.write(chunk)
 
     def download_audio(self, output_dir: str, start_time: str = None, end_time: str = None) -> str:
         """

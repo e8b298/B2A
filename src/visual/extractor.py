@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import httpx
 import yt_dlp
 
 from src.utils.logger import get_logger
@@ -163,6 +164,14 @@ class VisualExtractor:
                     "可能原因：B站风控拦截了无Cookie的请求，或当前网络不稳定。"
                     "请告知用户检查网络后重试，不会浪费任何磁盘空间。"
                 ) from e
+            # S3: yt-dlp failed, fallback to bilibili playurl API
+            logger.info("yt-dlp DownloadError for %s, trying playurl API fallback...", self.bvid)
+            try:
+                self._download_via_api(output_path, start_time, end_time)
+                return output_path
+            except Exception as e2:
+                logger.warning("playurl API fallback also failed: %s", e2)
+                _safe_remove(output_path)
             raise
         except Exception as e:
             _safe_remove(output_path)
@@ -173,7 +182,46 @@ class VisualExtractor:
                     "可能原因：B站风控拦截了无Cookie的请求，或当前网络过慢。"
                     "请告知用户检查网络后重试，不会浪费任何磁盘空间。"
                 ) from e
+            # S3: yt-dlp failed, fallback to bilibili playurl API
+            logger.info("yt-dlp Exception for %s, trying playurl API fallback...", self.bvid)
+            try:
+                self._download_via_api(output_path, start_time, end_time)
+                return output_path
+            except Exception as e2:
+                logger.warning("playurl API fallback also failed: %s", e2)
+                _safe_remove(output_path)
             raise
+
+    def _download_via_api(self, output_path: str, start_time: str = None, end_time: str = None):
+        """Download video via bilibili playurl API, with optional ffmpeg trim."""
+        from src.core.api import get_playurl_sync, HEADERS as API_HEADERS
+        stream_url = get_playurl_sync(self.bvid, video=True)
+        if not stream_url:
+            raise RuntimeError(f"playurl API returned no video stream for {self.bvid}")
+
+        if start_time and end_time:
+            # Download full then trim
+            tmp_path = output_path + ".tmp"
+            try:
+                self._download_stream(stream_url, tmp_path, API_HEADERS)
+                self._trim_with_ffmpeg(tmp_path, output_path, start_time, end_time)
+                _safe_remove(tmp_path)
+            except Exception:
+                _safe_remove(tmp_path)
+                raise
+        else:
+            self._download_stream(stream_url, output_path, API_HEADERS)
+
+    @staticmethod
+    def _download_stream(url: str, output_path: str, api_headers: dict):
+        """Download a raw stream from bilibili CDN."""
+        headers = {**api_headers, 'Referer': 'https://www.bilibili.com/'}
+        with httpx.Client(timeout=httpx.Timeout(connect=10, read=90, write=10, pool=10)) as client:
+            with client.stream("GET", url, headers=headers) as resp:
+                resp.raise_for_status()
+                with open(output_path, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=65536):
+                        f.write(chunk)
 
     def _trim_with_ffmpeg(self, input_path: str, output_path: str, start_time: str, end_time: str):
         cmd = [
