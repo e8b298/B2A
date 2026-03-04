@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=78.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "b2a777"
 version = "0.5.8"
 description = "B2A (Bilibili to Agents) — 让 AI Agent 能观看和倾听B站视频的多模态 MCP 插件"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 authors = [{name = "fanzhongli"}]
 requires-python = ">=3.10"
 keywords = ["bilibili", "agent", "ai", "subtitle", "asr", "video", "multimodal", "mcp"]
@@ -15,7 +15,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
